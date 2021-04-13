@@ -1,0 +1,2 @@
+# nanocnc
+Tiny gcode generator
