@@ -11,9 +11,13 @@ Line -> Shapely
 
 import sys
 import enum
+import json
 from PyQt5 import QtWidgets, QtCore, QtGui
 
 import libnanocnc
+
+
+PROGNAME = "nanocnc"
 
 
 class Attribute(enum.Enum):
@@ -22,6 +26,10 @@ class Attribute(enum.Enum):
     OUTER = enum.auto()
     DISABLE = enum.auto()
     IGNORE = enum.auto()
+
+
+class Zoom(enum.Enum):
+    FIT, IN, OUT = enum.auto(), enum.auto(), enum.auto()
 
 
 class GraphicView(QtWidgets.QGraphicsView):
@@ -100,11 +108,18 @@ class CommandWidget(QtWidgets.QWidget):
         self.graphicview = graphicview
         layout = QtWidgets.QVBoxLayout()
         button = QtWidgets.QPushButton("Zoom In")
+        button._data = Zoom.IN
         layout.addWidget(button)
-        button.clicked.connect(self.buttonZoomInClick)
+        button.clicked.connect(self.buttonZoomClick)
         button = QtWidgets.QPushButton("Zoom Out")
-        button.clicked.connect(self.buttonZoomOutClick)
+        button._data = Zoom.OUT
+        button.clicked.connect(self.buttonZoomClick)
         layout.addWidget(button)
+        button = QtWidgets.QPushButton("Fit in View")
+        button.clicked.connect(self.buttonZoomClick)
+        button._data = Zoom.FIT
+        layout.addWidget(button)
+
 
         self.buttongroup = QtWidgets.QButtonGroup()
         self.buttongroup.setExclusive(True)
@@ -145,11 +160,14 @@ class CommandWidget(QtWidgets.QWidget):
 
         self.cutmode = Attribute.NONE
 
-    def buttonZoomOutClick(self):
-        self.graphicview.scale(1 / 1.2, 1 / 1.2)
-
-    def buttonZoomInClick(self):
-        self.graphicview.scale(1.2, 1.2)
+    def buttonZoomClick(self):
+        button = self.sender()
+        if button._data == Zoom.OUT:
+            self.graphicview.scale(1 / 1.2, 1 / 1.2)
+        elif button._data == Zoom.IN:
+            self.graphicview.scale(1.2, 1.2)
+        elif button._data == Zoom.FIT:
+            self.graphicview.fitInView(self.graphicview.scene().itemsBoundingRect(), QtCore.Qt.KeepAspectRatio)
 
     def buttonActionClicked(self):
         button = self.sender()
@@ -159,22 +177,54 @@ class CommandWidget(QtWidgets.QWidget):
         self.signal_actionclicked.emit()
 
 
+class ToolWidget(QtWidgets.QTableWidget):
+    def __init__(self, toollist):
+        super().__init__()
+        self.setColumnCount(len(toollist[0].keys()))
+        self.setRowCount(len(toollist))
+        self.setHorizontalHeaderLabels(toollist[0].keys())
+        self.horizontalHeader().setStretchLastSection(True)
+        self.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.itemSelectionChanged.connect(self.toolChanged)
+
+        for row, tool in enumerate(toollist):
+            for column, key in enumerate(tool.keys()):
+                item = QtWidgets.QTableWidgetItem(str(tool[key]))
+                self.setItem(row, column, item)
+        self.currenttool = 0
+        self.selectRow(self.currenttool)
+
+    def toolChanged(self):
+        self.currenttool = self.selectionModel().selectedRows()[0].row()
+
+
 class MainWindow(QtWidgets.QMainWindow):
 
-    def __init__(self, filename=None):
+    def __init__(self, settings, filename=None):
         super().__init__()
+        self.setWindowTitle(PROGNAME)
+        self.setGeometry(0, 0, 600, 600)
+        self.settings = settings
         self.filename = filename
         self.cutmode = Attribute.NONE
         self.graphicview = GraphicView()
         self.graphicview.signal_groupselect.connect(self.groupSelect)
 
         self.commandwidget = CommandWidget(self.graphicview)
+        self.toolWidget = ToolWidget(settings["tooltable"])
 
         dockWidget = QtWidgets.QDockWidget("Commands")
         dockWidget.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable)
         dockWidget.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
         dockWidget.setWidget(self.commandwidget)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, dockWidget)
+
+        dockWidget = QtWidgets.QDockWidget("Tools")
+        dockWidget.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable)
+        dockWidget.setAllowedAreas(QtCore.Qt.BottomDockWidgetArea | QtCore.Qt.TopDockWidgetArea)
+        dockWidget.setWidget(self.toolWidget)
+        self.addDockWidget(QtCore.Qt.BottomDockWidgetArea, dockWidget)
 
         mainlayout = QtWidgets.QHBoxLayout()
         mainlayout.addWidget(self.graphicview)
@@ -183,6 +233,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.loadSvgFile(filename)
 
     def groupSelect(self, item):
+        tool = self.settings["tooltable"][self.toolWidget.currenttool]
+        diameter = tool["Diameter"]
         if self.commandwidget.cutmode == Attribute.NONE:
             item._pathattr = Attribute.NONE
             effect = QtWidgets.QGraphicsColorizeEffect()
@@ -192,17 +244,16 @@ class MainWindow(QtWidgets.QMainWindow):
             if group is not None:
                 self.graphicview.deleteGroup(group)
                 item._group = None
-            print("44")
         elif self.commandwidget.cutmode == Attribute.INNER:
             if item._pathattr == Attribute.NONE:
                 print("INNER")
-                group = self.graphicview.drawPolygon(item._polygon.expand(2), pathattr=Attribute.IGNORE)
+                group = self.graphicview.drawPolygon(item._polygon.expand(diameter / 2), pathattr=Attribute.IGNORE)
                 item._group = group
                 item._pathattr = Attribute.INNER
         elif self.commandwidget.cutmode == Attribute.OUTER:
             if item._pathattr == Attribute.NONE:
                 print("OUTER")
-                group = self.graphicview.drawPolygon(item._polygon.expand(-2), pathattr=Attribute.IGNORE)
+                group = self.graphicview.drawPolygon(item._polygon.expand(-diameter / 2), pathattr=Attribute.IGNORE)
                 item._group = group
                 item._pathattr = Attribute.OUTER
         elif self.commandwidget.cutmode == Attribute.DISABLE:
@@ -226,9 +277,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 if __name__ == '__main__':
+    settings = json.load(open("settings.json"))
     filename = "/home/achim/Dokumente/cnc/kreispoly.svg"
     app = QtWidgets.QApplication([sys.argv[0]] + ["-style", "Fusion"] + sys.argv[1:])
-    o = MainWindow(filename)
+    o = MainWindow(settings, filename)
     o.show()
     sys.exit(app.exec_())
 
