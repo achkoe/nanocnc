@@ -26,6 +26,8 @@ class Attribute(enum.Enum):
     OUTER = enum.auto()
     DISABLE = enum.auto()
     IGNORE = enum.auto()
+    ADD_TAB = enum.auto()
+    REMOVE_TAB = enum.auto()
 
 
 class Zoom(enum.Enum):
@@ -84,20 +86,6 @@ class GraphicView(QtWidgets.QGraphicsView):
         if len(itemlist) != 1:
             return
         self.signal_groupselect.emit(itemlist[0])
-        return
-
-        color = itemlist[0]._color
-
-        effect = QtWidgets.QGraphicsColorizeEffect()
-        if  color == self.color_a:
-            itemlist[0]._color = self.color_b
-            effect.setColor(self.color_b)
-        else:
-            itemlist[0]._color = self.color_a
-            effect.setColor(self.color_a)
-        itemlist[0].setGraphicsEffect(effect)
-        self.update()
-
 
 class CommandWidget(QtWidgets.QWidget):
 
@@ -119,7 +107,6 @@ class CommandWidget(QtWidgets.QWidget):
         button.clicked.connect(self.buttonZoomClick)
         button._data = Zoom.FIT
         layout.addWidget(button)
-
 
         self.buttongroup = QtWidgets.QButtonGroup()
         self.buttongroup.setExclusive(True)
@@ -152,9 +139,30 @@ class CommandWidget(QtWidgets.QWidget):
         button.setCheckable(True)
         layout.addWidget(button)
 
-        cbToolDiameter = QtWidgets.QComboBox()
-        cbToolDiameter.addItems(["1mm", "2mm", "3mm", "4mm"])
-        layout.addWidget(cbToolDiameter)
+        button = QtWidgets.QPushButton("Add tab",)
+        button._data = Attribute.ADD_TAB
+        button.clicked.connect(self.buttonActionClicked)
+        self.buttongroup.addButton(button)
+        button.setCheckable(True)
+        layout.addWidget(button)
+
+        button = QtWidgets.QPushButton("Remove tab",)
+        button._data = Attribute.REMOVE_TAB
+        button.clicked.connect(self.buttonActionClicked)
+        self.buttongroup.addButton(button)
+        button.setCheckable(True)
+        layout.addWidget(button)
+
+        layout.addWidget(QtWidgets.QLabel("Tab width"))
+        cbTabWidth = QtWidgets.QComboBox()
+        cbTabWidth.addItems(["1mm", "2mm", "3mm", "4mm"])
+        layout.addWidget(cbTabWidth)
+        layout.addStretch(1)
+
+        layout.addWidget(QtWidgets.QLabel("Tab height"))
+        cbTabHeight = QtWidgets.QComboBox()
+        cbTabHeight.addItems(["100%", "80%", "60%", "40%", "20%"])
+        layout.addWidget(cbTabHeight)
         layout.addStretch(1)
         self.setLayout(layout)
 
@@ -203,16 +211,26 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def __init__(self, settings, filename=None):
         super().__init__()
+        print(filename)
         self.setWindowTitle(PROGNAME)
         self.setGeometry(0, 0, 600, 600)
         self.settings = settings
         self.filename = filename
-        self.cutmode = Attribute.NONE
         self.graphicview = GraphicView()
         self.graphicview.signal_groupselect.connect(self.groupSelect)
 
         self.commandwidget = CommandWidget(self.graphicview)
         self.toolWidget = ToolWidget(settings["tooltable"])
+
+        self.openAct = QtWidgets.QAction("&Open...", self, shortcut="Ctrl+O", triggered=self.open)
+        self.saveAct = QtWidgets.QAction("&Save...", self, shortcut="Ctrl+S", triggered=self.save, enabled=False)
+        self.exitAct = QtWidgets.QAction("E&xit", self, shortcut="Ctrl+Q", triggered=self.close)
+
+        self.fileMenu = QtWidgets.QMenu("&File", self)
+        self.fileMenu.addAction(self.openAct)
+        self.fileMenu.addAction(self.saveAct)
+        self.fileMenu.addAction(self.exitAct)
+        self.menuBar().addMenu(self.fileMenu)
 
         dockWidget = QtWidgets.QDockWidget("Commands")
         dockWidget.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable)
@@ -229,8 +247,8 @@ class MainWindow(QtWidgets.QMainWindow):
         mainlayout = QtWidgets.QHBoxLayout()
         mainlayout.addWidget(self.graphicview)
         self.setCentralWidget(self.graphicview)
-        if filename is not None:
-            self.loadSvgFile(filename)
+        if filename:
+            self.open(filename=filename)
 
     def groupSelect(self, item):
         tool = self.settings["tooltable"][self.toolWidget.currenttool]
@@ -250,12 +268,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 group = self.graphicview.drawPolygon(item._polygon.expand(diameter / 2), pathattr=Attribute.IGNORE)
                 item._group = group
                 item._pathattr = Attribute.INNER
+                item._tool = tool
         elif self.commandwidget.cutmode == Attribute.OUTER:
             if item._pathattr == Attribute.NONE:
                 print("OUTER")
                 group = self.graphicview.drawPolygon(item._polygon.expand(-diameter / 2), pathattr=Attribute.IGNORE)
                 item._group = group
                 item._pathattr = Attribute.OUTER
+                item._tool = tool
         elif self.commandwidget.cutmode == Attribute.DISABLE:
             if item._pathattr == Attribute.NONE:
                 print("DISABLE")
@@ -269,16 +289,30 @@ class MainWindow(QtWidgets.QMainWindow):
             raise AttributeError(self.commandwidget.cutmode)
 
         self.graphicview.update()
-        self.cutmode = Attribute.NONE
 
     def loadSvgFile(self, filename):
         polygonlist = libnanocnc.svg2polygon(filename)
         self.graphicview.drawPolygonList(polygonlist, clear=True)
 
+    def save(self, filename=None):
+        print("save need to be implemented")
+
+    def open(self, _, filename=None):
+        print(filename)
+        if filename is None:
+            filename = QtWidgets.QFileDialog.getOpenFileName(self, "Open File", ".", "*.svg")[0]
+        if filename:
+            try:
+                self.loadSvgFile(filename)
+            except Exception:
+                QtWidgets.QMessageBox.critical(self, "Error opening file", traceback.format_exc())
+                return
 
 if __name__ == '__main__':
     settings = json.load(open("settings.json"))
-    filename = "/home/achim/Dokumente/cnc/kreispoly.svg"
+    filename = None if len(sys.argv) < 2 else sys.argv[1]
+    print(filename)
+    #filename = "/home/achim/Dokumente/cnc/kreispoly.svg"
     app = QtWidgets.QApplication([sys.argv[0]] + ["-style", "Fusion"] + sys.argv[1:])
     o = MainWindow(settings, filename)
     o.show()
