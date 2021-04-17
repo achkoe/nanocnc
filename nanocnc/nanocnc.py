@@ -21,13 +21,13 @@ PROGNAME = "nanocnc"
 
 
 class Attribute(enum.Enum):
-    NONE = enum.auto()
-    INNER = enum.auto()
-    OUTER = enum.auto()
-    DISABLE = enum.auto()
-    IGNORE = enum.auto()
-    ADD_TAB = enum.auto()
-    REMOVE_TAB = enum.auto()
+    NONE = enum.auto()      # indicates no action on path
+    INNER = enum.auto()     # indicates an inner cut for path
+    OUTER = enum.auto()     # indicates an outer cut for path
+    DISABLE = enum.auto()   # indicates an ignored path
+    CUTPATH = enum.auto()   # indicates that path is a cut path
+    ADD_TAB = enum.auto()       # action to add a tab to a cut path
+    REMOVE_TAB = enum.auto()    # action to remove a tab from a cut path
 
 
 class Zoom(enum.Enum):
@@ -36,10 +36,12 @@ class Zoom(enum.Enum):
 
 class GraphicView(QtWidgets.QGraphicsView):
 
-    signal_groupselect = QtCore.pyqtSignal(QtWidgets.QGraphicsItem)
+    signal_itemselect = QtCore.pyqtSignal(QtWidgets.QGraphicsItem, float, float)
+    signal_mousepos_changed = QtCore.pyqtSignal(float, float)
 
     def __init__(self):
         super().__init__()
+        self.selectlist = [Attribute.NONE, Attribute.INNER, Attribute.OUTER, Attribute.DISABLE]
         self.setMouseTracking(True)
         self.color_a = QtGui.QColor(255, 0, 0)
         self.color_b = QtGui.QColor(255, 255, 0)
@@ -47,6 +49,12 @@ class GraphicView(QtWidgets.QGraphicsView):
         self.effect_a.setColor(self.color_a)
         self.effect_b = QtWidgets.QGraphicsColorizeEffect()
         self.effect_b.setColor(self.color_b)
+
+    def setAction(self, action):
+        if action in [Attribute.ADD_TAB, Attribute.REMOVE_TAB]:
+            self.selectlist = [Attribute.CUTPATH]
+        else:
+            self.selectlist = [Attribute.NONE, Attribute.INNER, Attribute.OUTER, Attribute.DISABLE]
 
     def drawPolygonList(self, polygonlist, clear=False, pathattr=Attribute.NONE):
         if clear is True:
@@ -63,7 +71,8 @@ class GraphicView(QtWidgets.QGraphicsView):
             group.addToGroup(QtWidgets.QGraphicsLineItem(polygon.xlist[index], polygon.ylist[index],polygon.xlist[index + 1], polygon.ylist[index + 1]))
         group._pathattr = pathattr
         group._polygon = polygon
-        if pathattr == Attribute.IGNORE:
+        group._tool = None
+        if pathattr == Attribute.CUTPATH:
             effect = QtWidgets.QGraphicsColorizeEffect()
             effect.setColor(QtGui.QColor(0, 0, 255))
             group.setGraphicsEffect(effect)
@@ -75,17 +84,27 @@ class GraphicView(QtWidgets.QGraphicsView):
         group.prepareGeometryChange()
         self.scene().removeItem(group)
 
+    def addTab(self, item, xpos, ypos):
+        print("ADD_TAB")
+        self.scene().addItem(QtWidgets.QGraphicsEllipseItem(xpos, ypos, 2, 2))
+
+
     def mousePressEvent(self, event):
         extension = 6
         pos = self.cursor().pos()
         scenePoint = self.mapToScene(self.mapFromGlobal(pos))
         rect = QtCore.QRectF(scenePoint.x() - extension, scenePoint.y() - extension, 2 * extension, 2 * extension)
-        itemlist = [item for item in self.scene().items(rect) if isinstance(item, QtWidgets.QGraphicsItemGroup) and item._pathattr != Attribute.IGNORE]
+        itemlist = [item for item in self.scene().items(rect) if isinstance(item, QtWidgets.QGraphicsItemGroup) and item._pathattr in self.selectlist]
         # itemlist = [item for item in self.scene().items(rect) if item in self.activegroup.childItems()]
-        #print(itemlist)
+        # print(itemlist)
         if len(itemlist) != 1:
             return
-        self.signal_groupselect.emit(itemlist[0])
+        self.signal_itemselect.emit(itemlist[0], scenePoint.x(), scenePoint.y())
+
+    def mouseMoveEvent(self, event):
+        pos = self.cursor().pos()
+        scenePoint = self.mapToScene(self.mapFromGlobal(pos))
+        self.signal_mousepos_changed.emit(scenePoint.x(), scenePoint.y())
 
 class CommandWidget(QtWidgets.QWidget):
 
@@ -166,7 +185,7 @@ class CommandWidget(QtWidgets.QWidget):
         layout.addStretch(1)
         self.setLayout(layout)
 
-        self.cutmode = Attribute.NONE
+        self.action = Attribute.NONE
 
     def buttonZoomClick(self):
         button = self.sender()
@@ -181,7 +200,7 @@ class CommandWidget(QtWidgets.QWidget):
         button = self.sender()
         [other.setChecked(False) for other in self.buttongroup.buttons() if other != button]
         print(button, button.isChecked())
-        self.cutmode = button._data
+        self.action = button._data
         self.signal_actionclicked.emit()
 
 
@@ -217,13 +236,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings = settings
         self.filename = filename
         self.graphicview = GraphicView()
-        self.graphicview.signal_groupselect.connect(self.groupSelect)
+        self.graphicview.signal_itemselect.connect(self.itemSelect)
+        self.graphicview.signal_mousepos_changed.connect(self.viewMousePosition)
 
         self.commandwidget = CommandWidget(self.graphicview)
+        self.commandwidget.signal_actionclicked.connect(self.updateAction)
+        self.updateAction()
+
         self.toolWidget = ToolWidget(settings["tooltable"])
 
         self.openAct = QtWidgets.QAction("&Open...", self, shortcut="Ctrl+O", triggered=self.open)
-        self.saveAct = QtWidgets.QAction("&Save...", self, shortcut="Ctrl+S", triggered=self.save, enabled=False)
+        self.saveAct = QtWidgets.QAction("&Save...", self, shortcut="Ctrl+S", triggered=self.save)#, enabled=False)
         self.exitAct = QtWidgets.QAction("E&xit", self, shortcut="Ctrl+Q", triggered=self.close)
 
         self.fileMenu = QtWidgets.QMenu("&File", self)
@@ -231,6 +254,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fileMenu.addAction(self.saveAct)
         self.fileMenu.addAction(self.exitAct)
         self.menuBar().addMenu(self.fileMenu)
+
+        self.mouseposLabel = QtWidgets.QLabel("----.-, ----.-")
+        statusBar = self.statusBar()
+        statusBar.addWidget(self.mouseposLabel)
 
         dockWidget = QtWidgets.QDockWidget("Commands")
         dockWidget.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable)
@@ -248,12 +275,16 @@ class MainWindow(QtWidgets.QMainWindow):
         mainlayout.addWidget(self.graphicview)
         self.setCentralWidget(self.graphicview)
         if filename:
-            self.open(filename=filename)
+            self.open(None, filename=filename)
+            self.save()
 
-    def groupSelect(self, item):
+    def viewMousePosition(self, xpos, ypos):
+        self.mouseposLabel.setText("{:4.1f}, {:4.1f}".format(xpos, ypos))
+
+    def itemSelect(self, item, xpos, ypos):
         tool = self.settings["tooltable"][self.toolWidget.currenttool]
         diameter = tool["Diameter"]
-        if self.commandwidget.cutmode == Attribute.NONE:
+        if self.commandwidget.action == Attribute.NONE:
             item._pathattr = Attribute.NONE
             effect = QtWidgets.QGraphicsColorizeEffect()
             effect.setColor(QtGui.QColor(0, 0, 0))
@@ -262,33 +293,40 @@ class MainWindow(QtWidgets.QMainWindow):
             if group is not None:
                 self.graphicview.deleteGroup(group)
                 item._group = None
-        elif self.commandwidget.cutmode == Attribute.INNER:
+        elif self.commandwidget.action == Attribute.INNER:
             if item._pathattr == Attribute.NONE:
                 print("INNER")
-                group = self.graphicview.drawPolygon(item._polygon.expand(diameter / 2), pathattr=Attribute.IGNORE)
+                group = self.graphicview.drawPolygon(item._polygon.expand(diameter / 2), pathattr=Attribute.CUTPATH)
                 item._group = group
                 item._pathattr = Attribute.INNER
                 item._tool = tool
-        elif self.commandwidget.cutmode == Attribute.OUTER:
+        elif self.commandwidget.action == Attribute.OUTER:
             if item._pathattr == Attribute.NONE:
                 print("OUTER")
-                group = self.graphicview.drawPolygon(item._polygon.expand(-diameter / 2), pathattr=Attribute.IGNORE)
+                group = self.graphicview.drawPolygon(item._polygon.expand(-diameter / 2), pathattr=Attribute.CUTPATH)
                 item._group = group
                 item._pathattr = Attribute.OUTER
                 item._tool = tool
-        elif self.commandwidget.cutmode == Attribute.DISABLE:
+        elif self.commandwidget.action == Attribute.DISABLE:
             if item._pathattr == Attribute.NONE:
                 print("DISABLE")
                 effect = QtWidgets.QGraphicsColorizeEffect()
                 effect.setColor(QtGui.QColor(128, 128, 128))
                 item.setGraphicsEffect(effect)
                 item._pathattr = Attribute.DISABLE
-        elif self.commandwidget.cutmode == Attribute.IGNORE:
+        elif self.commandwidget.action == Attribute.CUTPATH:
+            pass
+        elif self.commandwidget.action == Attribute.ADD_TAB:
+            self.graphicview.addTab(item, xpos, ypos)
+        elif self.commandwidget.action == Attribute.REMOVE_TAB:
             pass
         else:
-            raise AttributeError(self.commandwidget.cutmode)
+            raise AttributeError(self.commandwidget.action)
 
         self.graphicview.update()
+
+    def updateAction(self):
+        self.graphicview.setAction(self.commandwidget.action)
 
     def loadSvgFile(self, filename):
         polygonlist = libnanocnc.svg2polygon(filename)
@@ -296,6 +334,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def save(self, filename=None):
         print("save need to be implemented")
+        itemlist = [item for item in self.graphicview.scene().items() if isinstance(item, QtWidgets.QGraphicsItemGroup)]
+        olist = []
+        for item in itemlist:
+            olist.append(dict(pathattr=item._pathattr.value, polygon=item._polygon.asdict(), tool=item._tool))
+        import json
+        json.dump(olist, open("n.nanocnc", "w"), indent=4)
 
     def open(self, _, filename=None):
         print(filename)
