@@ -43,6 +43,8 @@ class GraphicView(QtWidgets.QGraphicsView):
         super().__init__()
         self.selectlist = [Attribute.NONE, Attribute.INNER, Attribute.OUTER, Attribute.DISABLE]
         self.setMouseTracking(True)
+        self.pid = 0
+        self.previousitemslist = []
         self.color_a = QtGui.QColor(255, 0, 0)
         self.color_b = QtGui.QColor(255, 255, 0)
         self.effect_a = QtWidgets.QGraphicsColorizeEffect()
@@ -68,10 +70,13 @@ class GraphicView(QtWidgets.QGraphicsView):
         group = QtWidgets.QGraphicsItemGroup()
         #group = self.scene().createItemGroup([])
         for index in range(len(polygon.xlist) - 1):
-            group.addToGroup(QtWidgets.QGraphicsLineItem(polygon.xlist[index], polygon.ylist[index],polygon.xlist[index + 1], polygon.ylist[index + 1]))
+            group.addToGroup(QtWidgets.QGraphicsLineItem(polygon.xlist[index], polygon.ylist[index], polygon.xlist[index + 1], polygon.ylist[index + 1]))
         group._pathattr = pathattr
         group._polygon = polygon
         group._tool = None
+        self.pid += 1
+        group._pid = self.pid
+        print(group, self.pid)
         if pathattr == Attribute.CUTPATH:
             effect = QtWidgets.QGraphicsColorizeEffect()
             effect.setColor(QtGui.QColor(0, 0, 255))
@@ -84,16 +89,50 @@ class GraphicView(QtWidgets.QGraphicsView):
         group.prepareGeometryChange()
         self.scene().removeItem(group)
 
-    def addTab(self, item, xpos, ypos):
-        print("ADD_TAB")
-        self.scene().addItem(QtWidgets.QGraphicsEllipseItem(xpos, ypos, 2, 2))
+    def addTab(self, itemgroup, xpos, ypos, tabwidth, tabheight):
+        print("ADD_TAB", itemgroup._pid)
+        nearest_item = None
+        nearest_distance = 2 ** 30
+        N = 10
+        # get the item with nearest distance to (xpos, ypos)
+        for item in itemgroup.childItems():
+            for t in range(N):
+                pt = item.line().pointAt(t / N)
+                distance = (xpos - pt.x()) ** 2 + (ypos - pt.y()) ** 2
+                if distance < nearest_distance:
+                    nearest_distance = distance
+                    nearest_item = item
+        if nearest_item is None:
+            print("No nearest item found")
+            return
+        # get position atline where to put tab on
+        if nearest_item.line().length() <= tabwidth:
+            center = nearest_item.line().center()
+            tabxpos, tabypos = center.x(), center.y()
+        else:
+            nearest_distance = 2 ** 30
+            nearest_point = nearest_item.line().p1()
+            N = 100
+            for t in range(N):
+                pt = nearest_item.line().pointAt(t / N)
+                distance = (xpos - pt.x()) ** 2 + (ypos - pt.y()) ** 2
+                if distance < nearest_distance:
+                    nearest_distance = distance
+                    nearest_point = pt
+            tabxpos, tabypos = nearest_point.x(), nearest_point.y()
 
+        item = QtWidgets.QGraphicsEllipseItem(tabxpos - 1, tabypos - 1, 2, 2)
+        effect = QtWidgets.QGraphicsColorizeEffect()
+        effect.setColor(QtGui.QColor(0, 255, 255))
+        item.setGraphicsEffect(effect)
+        self.scene().addItem(item)
 
     def mousePressEvent(self, event):
-        extension = 6
+        extension = 3
         pos = self.cursor().pos()
         scenePoint = self.mapToScene(self.mapFromGlobal(pos))
         rect = QtCore.QRectF(scenePoint.x() - extension, scenePoint.y() - extension, 2 * extension, 2 * extension)
+        #self.scene().addItem(QtWidgets.QGraphicsRectItem(rect))
         itemlist = [item for item in self.scene().items(rect) if isinstance(item, QtWidgets.QGraphicsItemGroup) and item._pathattr in self.selectlist]
         # itemlist = [item for item in self.scene().items(rect) if item in self.activegroup.childItems()]
         # print(itemlist)
@@ -102,8 +141,21 @@ class GraphicView(QtWidgets.QGraphicsView):
         self.signal_itemselect.emit(itemlist[0], scenePoint.x(), scenePoint.y())
 
     def mouseMoveEvent(self, event):
+        for item in self.previousitemslist:
+            effect = QtWidgets.QGraphicsColorizeEffect()
+            if getattr(item, "_pathattr", None) == Attribute.CUTPATH:
+                effect.setColor(QtGui.QColor(0, 0, 255))
+            else:
+                effect.setColor(QtGui.QColor(0, 0, 0))
+            item.setGraphicsEffect(effect)
+        extension = 3
         pos = self.cursor().pos()
         scenePoint = self.mapToScene(self.mapFromGlobal(pos))
+        rect = QtCore.QRectF(scenePoint.x() - extension, scenePoint.y() - extension, 2 * extension, 2 * extension)
+        self.previousitemslist = [item for item in self.scene().items(rect) if isinstance(item, QtWidgets.QGraphicsItemGroup) and item._pathattr in self.selectlist]
+        effect = QtWidgets.QGraphicsColorizeEffect()
+        effect.setColor(QtGui.QColor(255, 0, 0))
+        [item.setGraphicsEffect(effect) for item in self.previousitemslist]
         self.signal_mousepos_changed.emit(scenePoint.x(), scenePoint.y())
 
 class CommandWidget(QtWidgets.QWidget):
@@ -173,15 +225,15 @@ class CommandWidget(QtWidgets.QWidget):
         layout.addWidget(button)
 
         layout.addWidget(QtWidgets.QLabel("Tab width"))
-        cbTabWidth = QtWidgets.QComboBox()
-        cbTabWidth.addItems(["1mm", "2mm", "3mm", "4mm"])
-        layout.addWidget(cbTabWidth)
+        self.cbTabWidth = QtWidgets.QComboBox()
+        self.cbTabWidth.addItems(["1", "2", "3", "4"])
+        layout.addWidget(self.cbTabWidth)
         layout.addStretch(1)
 
         layout.addWidget(QtWidgets.QLabel("Tab height"))
-        cbTabHeight = QtWidgets.QComboBox()
-        cbTabHeight.addItems(["100%", "80%", "60%", "40%", "20%"])
-        layout.addWidget(cbTabHeight)
+        self.cbTabHeight = QtWidgets.QComboBox()
+        self.cbTabHeight.addItems(["100%", "80%", "60%", "40%", "20%"])
+        layout.addWidget(self.cbTabHeight)
         layout.addStretch(1)
         self.setLayout(layout)
 
@@ -317,7 +369,9 @@ class MainWindow(QtWidgets.QMainWindow):
         elif self.commandwidget.action == Attribute.CUTPATH:
             pass
         elif self.commandwidget.action == Attribute.ADD_TAB:
-            self.graphicview.addTab(item, xpos, ypos)
+            width = float(self.commandwidget.cbTabWidth.currentText())
+            height = self.commandwidget.cbTabHeight.currentText()
+            self.graphicview.addTab(item, xpos, ypos, width, height)
         elif self.commandwidget.action == Attribute.REMOVE_TAB:
             pass
         else:
