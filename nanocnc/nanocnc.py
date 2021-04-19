@@ -12,6 +12,7 @@ Line -> Shapely
 import sys
 import enum
 import json
+import pathlib
 from PyQt5 import QtWidgets, QtCore, QtGui
 
 import libnanocnc
@@ -121,19 +122,21 @@ class GraphicView(QtWidgets.QGraphicsView):
                     nearest_distance = distance
                     nearest_point = pt
             tabxpos, tabypos = nearest_point.x(), nearest_point.y()
-        self.drawTab(tabxpos, tabypos, tabwidth, tabheight, itemgroup._pid)
-
-    def drawTab(self, tabxpos, tabypos, tabwidth, tabheight, groupid):
-        item = QtWidgets.QGraphicsEllipseItem(tabxpos - 1, tabypos - 1, 2, 2)
-        effect = QtWidgets.QGraphicsColorizeEffect()
-        effect.setColor(QtGui.QColor(0, 255, 255))
-        item.setGraphicsEffect(effect)
+        item = self.drawTab(tabxpos, tabypos)
         item._pathattr = Attribute.TAB
         item._pos = (tabxpos, tabypos)
         item._tabwidth = tabwidth
         item._tabheight = tabheight
-        item._refid = groupid
+        item._refid = itemgroup._pid
+        return item
+
+    def drawTab(self, tabxpos, tabypos):
+        item = QtWidgets.QGraphicsEllipseItem(tabxpos - 1, tabypos - 1, 2, 2)
+        effect = QtWidgets.QGraphicsColorizeEffect()
+        effect.setColor(QtGui.QColor(0, 255, 255))
+        item.setGraphicsEffect(effect)
         self.scene().addItem(item)
+        return item
 
     def removeTab(self, item):
         item.prepareGeometryChange()
@@ -340,7 +343,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(self.graphicview)
         if filename:
             self.open(None, filename=filename)
-            self.save()
 
     def viewMousePosition(self, xpos, ypos):
         self.mouseposLabel.setText("{:4.1f}, {:4.1f}".format(xpos, ypos))
@@ -360,17 +362,21 @@ class MainWindow(QtWidgets.QMainWindow):
         elif self.commandwidget.action == Attribute.INNER:
             if item._pathattr == Attribute.NONE:
                 print("INNER")
+                print(item._pid)
                 group = self.graphicview.drawPolygon(item._polygon.expand(diameter / 2), pathattr=Attribute.CUTPATH)
                 item._group = group
                 item._pathattr = Attribute.INNER
                 item._tool = tool
+                group._parent = item._pid
         elif self.commandwidget.action == Attribute.OUTER:
             if item._pathattr == Attribute.NONE:
                 print("OUTER")
+                print(item._pid)
                 group = self.graphicview.drawPolygon(item._polygon.expand(-diameter / 2), pathattr=Attribute.CUTPATH)
                 item._group = group
                 item._pathattr = Attribute.OUTER
                 item._tool = tool
+                group._parent = item._pid
         elif self.commandwidget.action == Attribute.DISABLE:
             if item._pathattr == Attribute.NONE:
                 print("DISABLE")
@@ -384,7 +390,8 @@ class MainWindow(QtWidgets.QMainWindow):
             print("ADD_TAB")
             width = float(self.commandwidget.cbTabWidth.currentText())
             height = self.commandwidget.cbTabHeight.currentText()
-            self.graphicview.addTab(item, xpos, ypos, width, height)
+            tabitem = self.graphicview.addTab(item, xpos, ypos, width, height)
+            tabitem._parentrefid = getattr(item, "_parent", None)
         elif self.commandwidget.action == Attribute.REMOVE_TAB:
             print("REMOVE_TAB")
             self.graphicview.removeTab(item)
@@ -400,13 +407,48 @@ class MainWindow(QtWidgets.QMainWindow):
         polygonlist = libnanocnc.svg2polygon(filename)
         self.graphicview.drawPolygonList(polygonlist, clear=True)
 
-    def save(self, filename=None):
-        print("save need to be implemented")
+    def save(self, _, filename=None):
+        """
+        pathlist is a list of objects describing a path
+        path object attributes are
+            "id":
+                number as identifier for the object
+            "parentid":
+                null or number of the id of object where this object is derived from
+                Cut path must always have a parentid
+                parentid is used for identifying the tool for the cut path
+            "pathattr":
+                type of cut, see Attribute
+            "polygon":
+                a dist with xlist, ylist as lists of polygon coordinates
+            "tool":
+                null or dict with tool, normally only object with no parentid have a tool
+
+        tablist is a list of tabs with object describing a tab
+        tab object are
+            "refid":
+                the id of path where ths tb lies on
+            "parentid":
+                the parentid of path where object lies on
+            "pos":
+                list x position, y position)
+            "width":
+                the width of the tab
+            "height":
+                the height of the tab
+        """
+        if filename is None:
+            proposedname = str(pathlib.Path(self.filename).with_suffix(".json"))
+            print(proposedname)
+            filename = QtWidgets.QFileDialog.getSaveFileName(self, "Save to", proposedname, "JSON (*.json);; All files (*.*")[0]
+        if filename == "":
+            return
+        print(filename)
         itemlist = [item for item in self.graphicview.scene().items() if isinstance(item, QtWidgets.QGraphicsItemGroup)]
-        pathlist = [dict(id=item._pid, pathattr=item._pathattr.value, polygon=item._polygon.asdict(), tool=item._tool) for item in itemlist]
+        pathlist = [dict(id=item._pid, parentid=getattr(item, "_parent", None), pathattr=item._pathattr.value, polygon=item._polygon.asdict(), tool=item._tool) for item in itemlist]
         itemlist = [item for item in self.graphicview.scene().items() if isinstance(item, QtWidgets.QGraphicsEllipseItem)]
-        tablist = [dict(refid=item._refid, pos=item._pos, width=item._tabwidth, height=item._tabheight) for item in itemlist]
-        json.dump(dict(pathlist=pathlist, tablist=tablist), open("n.nanocnc", "w"), indent=4)
+        tablist = [dict(refid=item._refid, parentid=item._parentrefid, pos=item._pos, width=item._tabwidth, height=item._tabheight) for item in itemlist]
+        json.dump(dict(pathlist=pathlist, tablist=tablist), open(filename, "w"), indent=4)
 
     def open(self, _, filename=None):
         print(filename)
