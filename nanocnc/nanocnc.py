@@ -63,6 +63,8 @@ class GraphicView(QtWidgets.QGraphicsView):
     def drawPolygonList(self, polygonlist, clear=False, pathattr=Attribute.NONE):
         if clear is True:
             self.setScene(QtWidgets.QGraphicsScene(QtCore.QRectF()))
+            self.scene().addItem(QtWidgets.QGraphicsLineItem(-2, 0, +2, 0))
+            self.scene().addItem(QtWidgets.QGraphicsLineItem(0, -2, 0, +2))
         for polygon in polygonlist:
             self.drawPolygon(polygon, pathattr)
         self.fitInView(self.scene().itemsBoundingRect(), QtCore.Qt.KeepAspectRatio)
@@ -194,6 +196,8 @@ class CommandWidget(QtWidgets.QWidget):
         button._data = Zoom.FIT
         layout.addWidget(button)
 
+        layout.addStretch(1)
+
         self.buttongroup = QtWidgets.QButtonGroup()
         self.buttongroup.setExclusive(True)
 
@@ -211,19 +215,21 @@ class CommandWidget(QtWidgets.QWidget):
         button.setCheckable(True)
         layout.addWidget(button)
 
-        button = QtWidgets.QPushButton("No Cut")
+        button = QtWidgets.QPushButton("Delete Cut")
         button._data = Attribute.NONE
         button.clicked.connect(self.buttonActionClicked)
         self.buttongroup.addButton(button)
         button.setCheckable(True)
         layout.addWidget(button)
 
-        button = QtWidgets.QPushButton("Disable",)
+        button = QtWidgets.QPushButton("Disable Contour",)
         button._data = Attribute.DISABLE
         button.clicked.connect(self.buttonActionClicked)
         self.buttongroup.addButton(button)
         button.setCheckable(True)
         layout.addWidget(button)
+
+        layout.addStretch(1)
 
         button = QtWidgets.QPushButton("Add tab",)
         button._data = Attribute.ADD_TAB
@@ -240,19 +246,56 @@ class CommandWidget(QtWidgets.QWidget):
         layout.addWidget(button)
 
         layout.addWidget(QtWidgets.QLabel("Tab width"))
-        self.cbTabWidth = QtWidgets.QComboBox()
-        self.cbTabWidth.addItems(["1", "2", "3", "4"])
-        layout.addWidget(self.cbTabWidth)
-        layout.addStretch(1)
+        self.wgTabWidth = QtWidgets.QDoubleSpinBox()
+        self.wgTabWidth.setSuffix("mm")
+        self.wgTabWidth.setRange(1, 10)
+        self.wgTabWidth.setSingleStep(1)
+        self.wgTabWidth.setValue(4)
+        self.wgTabWidth.setDecimals(1)
+        layout.addWidget(self.wgTabWidth)
 
         layout.addWidget(QtWidgets.QLabel("Tab height"))
-        self.cbTabHeight = QtWidgets.QComboBox()
-        self.cbTabHeight.addItems(["100%", "80%", "60%", "40%", "20%"])
-        layout.addWidget(self.cbTabHeight)
+        self.wgTabHeight = QtWidgets.QDoubleSpinBox()
+        self.wgTabHeight.setSuffix("mm")
+        self.wgTabHeight.setRange(1, 30)
+        self.wgTabHeight.setSingleStep(1)
+        self.wgTabHeight.setValue(4)
+        self.wgTabHeight.setDecimals(1)
+        layout.addWidget(self.wgTabHeight)
         layout.addStretch(1)
+
+        layout.addWidget(QtWidgets.QLabel("Material Thickness"))
+        self.wgMaterialThickness = QtWidgets.QDoubleSpinBox()
+        self.wgMaterialThickness.setSuffix("mm")
+        self.wgMaterialThickness.setRange(1, 30)
+        self.wgMaterialThickness.setSingleStep(1)
+        self.wgMaterialThickness.setValue(10)
+        self.wgMaterialThickness.setDecimals(1)
+        self.wgMaterialThickness.valueChanged.connect(self.thicknessChanged)
+        self.thicknessChanged(10)
+        layout.addWidget(self.wgMaterialThickness)
+
+        layout.addStretch(1)
+
+        layout.addWidget(QtWidgets.QLabel("Safe Z"))
+        self.wgSaveZ = QtWidgets.QDoubleSpinBox()
+        self.wgSaveZ.setSuffix("mm")
+        self.wgSaveZ.setRange(5, 50)
+        self.wgSaveZ.setSingleStep(1)
+        self.wgSaveZ.setValue(10)
+        self.wgSaveZ.setDecimals(1)
+        layout.addWidget(self.wgSaveZ)
+
+        layout.addStretch(1)
+
         self.setLayout(layout)
 
         self.action = Attribute.NONE
+
+    def thicknessChanged(self, newvalue):
+        self.wgTabHeight.setMaximum(newvalue)
+        if self.wgTabHeight.value() > newvalue:
+            self.wgTabHeight.setValue(newvalue)
 
     def buttonZoomClick(self):
         button = self.sender()
@@ -299,7 +342,7 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         print(filename)
         self.setWindowTitle(PROGNAME)
-        self.setGeometry(0, 0, 600, 600)
+        self.setGeometry(0, 0, 1024, 1024)
         self.settings = settings
         self.filename = filename
         self.graphicview = GraphicView()
@@ -338,6 +381,22 @@ class MainWindow(QtWidgets.QMainWindow):
         dockWidget.setWidget(self.toolWidget)
         self.addDockWidget(QtCore.Qt.BottomDockWidgetArea, dockWidget)
 
+        #---------------------------------------------------
+        if 0:
+            tb = QtWidgets.QToolBar()
+            tb.setIconSize(QtCore.QSize(32, 32))
+            tb.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
+            #tb.setAllowedAreas()
+            #toolAction = QtWidgets.QAction()
+            tb.addAction(QtGui.QIcon("icons/cutinner.png"), "Cut Inside")
+            tb.addAction(QtGui.QIcon("icons/cutouter.png"), "Cut Outside")
+            tb.addWidget(QtWidgets.QComboBox())
+            self.addToolBar(QtCore.Qt.RightToolBarArea, tb)
+            #toolButton = QtWidgets.QToolButton()
+            #toolButton.setDefaultAction(toolAction)
+            #layout.addWidget(toolButton)
+            #---------------------------------------------------
+
         mainlayout = QtWidgets.QHBoxLayout()
         mainlayout.addWidget(self.graphicview)
         self.setCentralWidget(self.graphicview)
@@ -348,8 +407,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mouseposLabel.setText("{:4.1f}, {:4.1f}".format(xpos, ypos))
 
     def itemSelect(self, item, xpos, ypos):
-        tool = self.settings["tooltable"][self.toolWidget.currenttool]
-        diameter = tool["Diameter"]
+        tool = self.toolWidget.currenttool
+        diameter = self.settings["tooltable"][tool]["Diameter"]
         if self.commandwidget.action == Attribute.NONE:
             item._pathattr = Attribute.NONE
             effect = QtWidgets.QGraphicsColorizeEffect()
@@ -388,8 +447,8 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
         elif self.commandwidget.action == Attribute.ADD_TAB:
             print("ADD_TAB")
-            width = float(self.commandwidget.cbTabWidth.currentText())
-            height = self.commandwidget.cbTabHeight.currentText()
+            width = self.commandwidget.wgTabWidth.value()
+            height = self.commandwidget.wgTabHeight.value()
             tabitem = self.graphicview.addTab(item, xpos, ypos, width, height)
             tabitem._parentrefid = getattr(item, "_parent", None)
         elif self.commandwidget.action == Attribute.REMOVE_TAB:
@@ -448,7 +507,8 @@ class MainWindow(QtWidgets.QMainWindow):
         pathlist = [dict(id=item._pid, parentid=getattr(item, "_parent", None), pathattr=item._pathattr.value, polygon=item._polygon.asdict(), tool=item._tool) for item in itemlist]
         itemlist = [item for item in self.graphicview.scene().items() if isinstance(item, QtWidgets.QGraphicsEllipseItem)]
         tablist = [dict(refid=item._refid, parentid=item._parentrefid, pos=item._pos, width=item._tabwidth, height=item._tabheight) for item in itemlist]
-        json.dump(dict(pathlist=pathlist, tablist=tablist), open(filename, "w"), indent=4)
+        settings = dict(savez=self.commandwidget.wgSaveZ.value(), materialthickness=self.commandwidget.wgMaterialThickness.value())
+        json.dump(dict(settings=settings, pathlist=pathlist, tablist=tablist, toollist=self.settings["tooltable"]), open(filename, "w"), indent=4)
 
     def open(self, _, filename=None):
         print(filename)
