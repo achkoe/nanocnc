@@ -13,6 +13,7 @@ import sys
 import enum
 import json
 import pathlib
+import traceback
 from PyQt5 import QtWidgets, QtCore, QtGui
 
 import libnanocnc
@@ -30,7 +31,10 @@ class Attribute(enum.Enum):
     CUTPATH = enum.auto()   # indicates that path is a cut path
     ADD_TAB = enum.auto()       # action to add a tab to a cut path
     REMOVE_TAB = enum.auto()    # action to remove a tab from a cut path
-    TAB = enum.auto()       # indicated a TAB
+    ADD_OVERCUT = enum.auto()
+    REMOVE_OVERCUT = enum.auto()
+    TAB = enum.auto()       # indicates a TAB
+    OVERCUT = enum.auto()   # indicates an OVERCUT
 
 
 class Zoom(enum.Enum):
@@ -53,8 +57,17 @@ class GraphicView(QtWidgets.QGraphicsView):
         if action in [Attribute.ADD_TAB]:
             self.selectlist = [Attribute.CUTPATH]
             self.selectitem = QtWidgets.QGraphicsItemGroup
+            self.selectlist = [Attribute.CUTPATH]
+            self.selectitem = QtWidgets.QGraphicsItemGroup
         elif action in [Attribute.REMOVE_TAB]:
             self.selectlist = [Attribute.TAB]
+            self.selectitem = QtWidgets.QGraphicsEllipseItem
+        elif action in [Attribute.ADD_OVERCUT]:
+            print(action)
+            self.selectlist = [Attribute.OVERCUT]
+            self.selectitem = QtWidgets.QGraphicsEllipseItem
+        elif action in [Attribute.REMOVE_OVERCUT]:
+            self.selectlist = [Attribute.OVERCUT]
             self.selectitem = QtWidgets.QGraphicsEllipseItem
         else:
             self.selectlist = [Attribute.NONE, Attribute.INNER, Attribute.OUTER, Attribute.DISABLE]
@@ -75,6 +88,10 @@ class GraphicView(QtWidgets.QGraphicsView):
         #group = self.scene().createItemGroup([])
         for index in range(len(polygon.xlist) - 1):
             group.addToGroup(QtWidgets.QGraphicsLineItem(polygon.xlist[index], polygon.ylist[index], polygon.xlist[index + 1], polygon.ylist[index + 1]))
+            if 1 and pathattr == Attribute.CUTPATH:
+                marker = QtWidgets.QGraphicsEllipseItem(polygon.xlist[index] - 0.5, polygon.ylist[index] - 0.5, 1, 1)
+                marker._pathattr = Attribute.OVERCUT
+                self.scene().addItem(marker)
         group._pathattr = pathattr
         group._polygon = polygon
         group._tool = None
@@ -162,8 +179,12 @@ class GraphicView(QtWidgets.QGraphicsView):
     def mouseMoveEvent(self, event):
         for item in self.previousitemslist:
             effect = QtWidgets.QGraphicsColorizeEffect()
-            if getattr(item, "_pathattr", None) in [Attribute.CUTPATH, Attribute.TAB]:
+            action = getattr(item, "_pathattr", None)
+            #print(action)
+            if action in [Attribute.CUTPATH, Attribute.TAB]:
                 effect.setColor(QtGui.QColor(0, 0, 255))
+            elif action in [Attribute.ADD_OVERCUT, Attribute.REMOVE_OVERCUT]:
+                effect.setColor(QtGui.QColor(0, 255, 0))
             else:
                 effect.setColor(QtGui.QColor(0, 0, 0))
             item.setGraphicsEffect(effect)
@@ -174,6 +195,7 @@ class GraphicView(QtWidgets.QGraphicsView):
         effect.setColor(QtGui.QColor(255, 0, 0))
         [item.setGraphicsEffect(effect) for item in self.previousitemslist]
         self.signal_mousepos_changed.emit(scenePoint.x(), scenePoint.y())
+
 
 class CommandWidget(QtWidgets.QWidget):
 
@@ -264,6 +286,21 @@ class CommandWidget(QtWidgets.QWidget):
         layout.addWidget(self.wgTabHeight)
         layout.addStretch(1)
 
+        button = QtWidgets.QPushButton("Add overcut")
+        button._data = Attribute.ADD_OVERCUT
+        button.clicked.connect(self.buttonActionClicked)
+        self.buttongroup.addButton(button)
+        button.setCheckable(True)
+        layout.addWidget(button)
+
+        button = QtWidgets.QPushButton("Remove overcut")
+        button._data = Attribute.REMOVE_OVERCUT
+        button.clicked.connect(self.buttonActionClicked)
+        self.buttongroup.addButton(button)
+        button.setCheckable(True)
+        layout.addWidget(button)
+        layout.addStretch(1)
+
         layout.addWidget(QtWidgets.QLabel("Material Thickness"))
         self.wgMaterialThickness = QtWidgets.QDoubleSpinBox()
         self.wgMaterialThickness.setSuffix("mm")
@@ -309,7 +346,7 @@ class CommandWidget(QtWidgets.QWidget):
     def buttonActionClicked(self):
         button = self.sender()
         [other.setChecked(False) for other in self.buttongroup.buttons() if other != button]
-        print(button, button.isChecked())
+        # print(button, button.isChecked())
         self.action = button._data
         self.signal_actionclicked.emit()
 
@@ -454,6 +491,10 @@ class MainWindow(QtWidgets.QMainWindow):
         elif self.commandwidget.action == Attribute.REMOVE_TAB:
             print("REMOVE_TAB")
             self.graphicview.removeTab(item)
+        elif self.commandwidget.action == Attribute.ADD_OVERCUT:
+            print("ADD_OVERCUT")
+        elif self.commandwidget.action == Attribute.REMOVE_OVERCUT:
+            print("REMOVE_OVERCUT")
         else:
             raise AttributeError(self.commandwidget.action)
 
