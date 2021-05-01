@@ -24,6 +24,14 @@ PROGNAME = "nanocnc"
 
 # TODO: fix id off TAB, has to refer to base polygon, not to INNER or OUTER polygon
 
+COLOR_NORMAL = QtGui.QColor(QtCore.Qt.black)
+COLOR_HOVER = QtGui.QColor(QtCore.Qt.green)
+COLOR_CUTPATH = QtGui.QColor(QtCore.Qt.blue)
+COLOR_TAB =  QtGui.QColor(QtCore.Qt.red)
+COLOR_OVERCUT = QtGui.QColor(QtCore.Qt.red)
+COLOR_DISABLE = QtGui.QColor(QtCore.Qt.gray)
+
+
 class Attribute(enum.Enum):
     NONE = enum.auto()      # indicates no action on path
     INNER = enum.auto()     # indicates an inner cut for path
@@ -111,7 +119,7 @@ class GraphicView(QtWidgets.QGraphicsView):
         # print(group, self.pid)
         if pathattr == Attribute.CUTPATH:
             effect = QtWidgets.QGraphicsColorizeEffect()
-            effect.setColor(QtGui.QColor(0, 0, 255))
+            effect.setColor(COLOR_CUTPATH)
             group.setGraphicsEffect(effect)
         self.scene().addItem(group)
         return group
@@ -181,7 +189,7 @@ class GraphicView(QtWidgets.QGraphicsView):
         item._refid = pid
         item._parentrefid = parentrefid
         effect = QtWidgets.QGraphicsColorizeEffect()
-        effect.setColor(QtGui.QColor(0, 255, 255))
+        effect.setColor(COLOR_TAB)
         item.setGraphicsEffect(effect)
         self.scene().addItem(item)
         return item
@@ -192,11 +200,20 @@ class GraphicView(QtWidgets.QGraphicsView):
 
     def addOverCut(self, item):
         effect = QtWidgets.QGraphicsColorizeEffect()
-        effect.setColor(QtGui.QColor(255, 0, 0))
+        effect.setColor(COLOR_OVERCUT)
         item.setGraphicsEffect(effect)
         item._pathattr = Attribute.OVERCUT
         item.setVisible(True)
         self.previousitemslist = [theitem for theitem in self.previousitemslist if theitem != item]
+
+    def removeOverCut(self, item):
+        effect = QtWidgets.QGraphicsColorizeEffect()
+        effect.setColor(COLOR_NORMAL)
+        item.setGraphicsEffect(effect)
+        item._pathattr = Attribute.CORNER
+        item.setVisible(False)
+        self.update()
+        #self.previousitemslist = [theitem for theitem in self.previousitemslist if theitem != item]
 
     def getSelectionRect(self, scenePoint):
         extension = 3
@@ -215,25 +232,35 @@ class GraphicView(QtWidgets.QGraphicsView):
 
     def mouseMoveEvent(self, event):
         for item in self.previousitemslist:
-            effect = QtWidgets.QGraphicsColorizeEffect()
-            action = getattr(item, "_pathattr", None)
-            #print(action)
-            if action in [Attribute.CUTPATH, Attribute.TAB]:
-                effect.setColor(QtGui.QColor(0, 0, 255))
-            elif action in [Attribute.ADD_OVERCUT, Attribute.REMOVE_OVERCUT]:
-                # effect.setColor(QtGui.QColor(0, 255, 0))
-                pass
+            if 1:
+                effect = QtWidgets.QGraphicsColorizeEffect()
+                effect.setColor(getattr(item, "_last_effect", COLOR_NORMAL))
+                item.setGraphicsEffect(effect)
             else:
-                effect.setColor(QtGui.QColor(0, 0, 0))
-            item.setGraphicsEffect(effect)
+                effect = QtWidgets.QGraphicsColorizeEffect()
+                action = getattr(item, "_pathattr", None)
+                #print(action)
+                if action in [Attribute.CUTPATH, Attribute.TAB]:
+                    effect.setColor(COLOR_CUTPATH)
+                elif action in [Attribute.ADD_OVERCUT, Attribute.REMOVE_OVERCUT]:
+                    effect.setColor(COLOR_HOVER)
+                else:
+                    effect.setColor(COLOR_NORMAL)
+                item.setGraphicsEffect(effect)
+
         pos = self.cursor().pos()
         scenePoint = self.mapToScene(self.mapFromGlobal(pos))
         # put all items in previousitemslist ifthey are in getSelectionRect() and right item
         self.previousitemslist = [item for item in self.scene().items(self.getSelectionRect(scenePoint)) if isinstance(item, self.selectitem) and item._pathattr in self.selectlist]
         effect = QtWidgets.QGraphicsColorizeEffect()
-        effect.setColor(QtGui.QColor(255, 0, 0))
+        effect.setColor(COLOR_HOVER)
         # highlight all items in previousitemslist in color red
-        [item.setGraphicsEffect(effect) for item in self.previousitemslist]
+        for item in self.previousitemslist:
+            try:
+                item._last_effect = item.graphicsEffect().color()
+            except Exception:
+                pass
+            item.setGraphicsEffect(effect)
         self.signal_mousepos_changed.emit(scenePoint.x(), scenePoint.y())
 
 
@@ -489,7 +516,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.commandwidget.action == Attribute.NONE:
             item._pathattr = Attribute.NONE
             effect = QtWidgets.QGraphicsColorizeEffect()
-            effect.setColor(QtGui.QColor(0, 0, 0))
+            effect.setColor(COLOR_NORMAL)
             item.setGraphicsEffect(effect)
             group = getattr(item, "_group", None)
             if group is not None:
@@ -517,7 +544,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if item._pathattr == Attribute.NONE:
                 print("DISABLE")
                 effect = QtWidgets.QGraphicsColorizeEffect()
-                effect.setColor(QtGui.QColor(128, 128, 128))
+                effect.setColor(COLOR_DISABLE)
                 item.setGraphicsEffect(effect)
                 item._pathattr = Attribute.DISABLE
         elif self.commandwidget.action == Attribute.CUTPATH:
@@ -535,6 +562,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.graphicview.addOverCut(item)
         elif self.commandwidget.action == Attribute.REMOVE_OVERCUT:
             print("REMOVE_OVERCUT")
+            self.graphicview.removeOverCut(item)
         else:
             raise AttributeError(self.commandwidget.action)
 
