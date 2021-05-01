@@ -13,6 +13,7 @@ import sys
 import enum
 import json
 import pathlib
+import math
 import traceback
 from PyQt5 import QtWidgets, QtCore, QtGui
 
@@ -35,6 +36,7 @@ class Attribute(enum.Enum):
     REMOVE_OVERCUT = enum.auto()
     TAB = enum.auto()       # indicates a TAB
     OVERCUT = enum.auto()   # indicates an OVERCUT
+    CORNER = enum.auto()
 
 
 class Zoom(enum.Enum):
@@ -48,12 +50,16 @@ class GraphicView(QtWidgets.QGraphicsView):
 
     def __init__(self):
         super().__init__()
+        self.setScene(QtWidgets.QGraphicsScene(QtCore.QRectF()))
         self.selectlist = [Attribute.NONE, Attribute.INNER, Attribute.OUTER, Attribute.DISABLE]
         self.setMouseTracking(True)
         self.pid = 0
+        self.mid = 0
         self.previousitemslist = []
 
     def setAction(self, action):
+        if self.scene() is not None:
+            [item.setVisible(False) for item in self.scene().items() if getattr(item, "_pathattr", None) == Attribute.CORNER]
         if action in [Attribute.ADD_TAB]:
             self.selectlist = [Attribute.CUTPATH]
             self.selectitem = QtWidgets.QGraphicsItemGroup
@@ -63,8 +69,8 @@ class GraphicView(QtWidgets.QGraphicsView):
             self.selectlist = [Attribute.TAB]
             self.selectitem = QtWidgets.QGraphicsEllipseItem
         elif action in [Attribute.ADD_OVERCUT]:
-            print(action)
-            self.selectlist = [Attribute.OVERCUT]
+            [item.setVisible(True) for item in self.scene().items() if getattr(item, "_pathattr", None) == Attribute.CORNER]
+            self.selectlist = [Attribute.CORNER]
             self.selectitem = QtWidgets.QGraphicsEllipseItem
         elif action in [Attribute.REMOVE_OVERCUT]:
             self.selectlist = [Attribute.OVERCUT]
@@ -83,19 +89,24 @@ class GraphicView(QtWidgets.QGraphicsView):
         self.fitInView(self.scene().itemsBoundingRect(), QtCore.Qt.KeepAspectRatio)
         self.update()
 
-    def drawPolygon(self, polygon, pathattr):
+    def drawPolygon(self, polygon, pathattr, tool=None):
         group = QtWidgets.QGraphicsItemGroup()
         #group = self.scene().createItemGroup([])
+        self.pid += 1
         for index in range(len(polygon.xlist) - 1):
             group.addToGroup(QtWidgets.QGraphicsLineItem(polygon.xlist[index], polygon.ylist[index], polygon.xlist[index + 1], polygon.ylist[index + 1]))
             if 1 and pathattr == Attribute.CUTPATH:
                 marker = QtWidgets.QGraphicsEllipseItem(polygon.xlist[index] - 0.5, polygon.ylist[index] - 0.5, 1, 1)
-                marker._pathattr = Attribute.OVERCUT
+                marker._pathattr = Attribute.CORNER
+                marker._parentrefid = self.pid
+                self.mid += 1
+                marker._id = self.mid
+                marker._pos = (polygon.xlist[index], polygon.ylist[index])
+                marker.setVisible(False)
                 self.scene().addItem(marker)
         group._pathattr = pathattr
         group._polygon = polygon
-        group._tool = None
-        self.pid += 1
+        group._tool = tool
         group._pid = self.pid
         # print(group, self.pid)
         if pathattr == Attribute.CUTPATH:
@@ -105,12 +116,29 @@ class GraphicView(QtWidgets.QGraphicsView):
         self.scene().addItem(group)
         return group
 
+    def drawJson(self, jsonobj):
+        for path in jsonobj["pathlist"]:
+            polygon = libnanocnc.Polygon(path["polygon"]["xlist"], path["polygon"]["ylist"])
+            self.drawPolygon(polygon, Attribute(path["pathattr"]), path["tool"])
+        for corner in jsonobj["cornerlist"]:
+            pass
+        for tab in jsonobj["tablist"]:
+            # TODO: set attributes of returned tab item, 0 is not correct
+            self.drawTab(tab["refid"], tab["pos"][0], tab["pos"][1], tab["width"], tab["height"], tab["parentid"])
+        for overcut in jsonobj["overcutlist"]:
+            # search the marker witt same id as overcut id
+            itemlist = [item for item in self.scene().items() if getattr(item, "_pathattr", None) == Attribute.CORNER and math.isclose(item._pos[0], overcut["pos"][0], rel_tol=1E-3) and math.isclose(item._pos[1], overcut["pos"][1], rel_tol=1E-3) ]
+            assert len(itemlist) > 0, "no matching overcut found"
+            self.addOverCut(itemlist[0])
+        self.fitInView(self.scene().itemsBoundingRect(), QtCore.Qt.KeepAspectRatio)
+        self.update()
+
     def deleteGroup(self, group):
         print("deleteGroup")
         group.prepareGeometryChange()
         self.scene().removeItem(group)
 
-    def addTab(self, itemgroup, xpos, ypos, tabwidth, tabheight):
+    def addTab(self, itemgroup, xpos, ypos, tabwidth, tabheight, parentrefid):
         print("ADD_TAB", itemgroup._pid)
         nearest_item = None
         nearest_distance = 2 ** 30
@@ -141,16 +169,17 @@ class GraphicView(QtWidgets.QGraphicsView):
                     nearest_distance = distance
                     nearest_point = pt
             tabxpos, tabypos = nearest_point.x(), nearest_point.y()
-        item = self.drawTab(tabxpos, tabypos)
+        item = self.drawTab(itemgroup._pid, tabxpos, tabypos, tabwidth, tabheight, parentrefid)
+        return item
+
+    def drawTab(self, pid, tabxpos, tabypos, tabwidth, tabheight, parentrefid):
+        item = QtWidgets.QGraphicsEllipseItem(tabxpos - 1, tabypos - 1, 2, 2)
         item._pathattr = Attribute.TAB
         item._pos = (tabxpos, tabypos)
         item._tabwidth = tabwidth
         item._tabheight = tabheight
-        item._refid = itemgroup._pid
-        return item
-
-    def drawTab(self, tabxpos, tabypos):
-        item = QtWidgets.QGraphicsEllipseItem(tabxpos - 1, tabypos - 1, 2, 2)
+        item._refid = pid
+        item._parentrefid = parentrefid
         effect = QtWidgets.QGraphicsColorizeEffect()
         effect.setColor(QtGui.QColor(0, 255, 255))
         item.setGraphicsEffect(effect)
@@ -160,6 +189,14 @@ class GraphicView(QtWidgets.QGraphicsView):
     def removeTab(self, item):
         item.prepareGeometryChange()
         self.scene().removeItem(item)
+
+    def addOverCut(self, item):
+        effect = QtWidgets.QGraphicsColorizeEffect()
+        effect.setColor(QtGui.QColor(255, 0, 0))
+        item.setGraphicsEffect(effect)
+        item._pathattr = Attribute.OVERCUT
+        item.setVisible(True)
+        self.previousitemslist = [theitem for theitem in self.previousitemslist if theitem != item]
 
     def getSelectionRect(self, scenePoint):
         extension = 3
@@ -184,15 +221,18 @@ class GraphicView(QtWidgets.QGraphicsView):
             if action in [Attribute.CUTPATH, Attribute.TAB]:
                 effect.setColor(QtGui.QColor(0, 0, 255))
             elif action in [Attribute.ADD_OVERCUT, Attribute.REMOVE_OVERCUT]:
-                effect.setColor(QtGui.QColor(0, 255, 0))
+                # effect.setColor(QtGui.QColor(0, 255, 0))
+                pass
             else:
                 effect.setColor(QtGui.QColor(0, 0, 0))
             item.setGraphicsEffect(effect)
         pos = self.cursor().pos()
         scenePoint = self.mapToScene(self.mapFromGlobal(pos))
+        # put all items in previousitemslist ifthey are in getSelectionRect() and right item
         self.previousitemslist = [item for item in self.scene().items(self.getSelectionRect(scenePoint)) if isinstance(item, self.selectitem) and item._pathattr in self.selectlist]
         effect = QtWidgets.QGraphicsColorizeEffect()
         effect.setColor(QtGui.QColor(255, 0, 0))
+        # highlight all items in previousitemslist in color red
         [item.setGraphicsEffect(effect) for item in self.previousitemslist]
         self.signal_mousepos_changed.emit(scenePoint.x(), scenePoint.y())
 
@@ -486,13 +526,13 @@ class MainWindow(QtWidgets.QMainWindow):
             print("ADD_TAB")
             width = self.commandwidget.wgTabWidth.value()
             height = self.commandwidget.wgTabHeight.value()
-            tabitem = self.graphicview.addTab(item, xpos, ypos, width, height)
-            tabitem._parentrefid = getattr(item, "_parent", None)
+            tabitem = self.graphicview.addTab(item, xpos, ypos, width, height, parentrefid=getattr(item, "_parent", None))
         elif self.commandwidget.action == Attribute.REMOVE_TAB:
             print("REMOVE_TAB")
             self.graphicview.removeTab(item)
         elif self.commandwidget.action == Attribute.ADD_OVERCUT:
             print("ADD_OVERCUT")
+            self.graphicview.addOverCut(item)
         elif self.commandwidget.action == Attribute.REMOVE_OVERCUT:
             print("REMOVE_OVERCUT")
         else:
@@ -506,6 +546,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def loadSvgFile(self, filename):
         polygonlist = libnanocnc.svg2polygon(filename)
         self.graphicview.drawPolygonList(polygonlist, clear=True)
+
+    def loadJsonFile(self, filename):
+        with open(filename) as fh:
+            self.graphicview.drawJson(json.load(fh))
 
     def save(self, _, filename=None):
         """
@@ -531,11 +575,19 @@ class MainWindow(QtWidgets.QMainWindow):
             "parentid":
                 the parentid of path where object lies on
             "pos":
-                list x position, y position)
+                list (x position, y position)
             "width":
                 the width of the tab
             "height":
                 the height of the tab
+
+        overcutlist is a list of all overcuts with object describing the overcut
+        overctu object is
+            "parentid": the id of path to which the overcut belongs to
+            "pos": list (x position, y position)
+            "id": number identifying the overcut
+
+        cornerlist is same as overcutlist but for corners which are not already overcuts
         """
         if filename is None:
             proposedname = str(pathlib.Path(self.filename).with_suffix(".json"))
@@ -546,21 +598,41 @@ class MainWindow(QtWidgets.QMainWindow):
         print(filename)
         itemlist = [item for item in self.graphicview.scene().items() if isinstance(item, QtWidgets.QGraphicsItemGroup)]
         pathlist = [dict(id=item._pid, parentid=getattr(item, "_parent", None), pathattr=item._pathattr.value, polygon=item._polygon.asdict(), tool=item._tool) for item in itemlist]
-        itemlist = [item for item in self.graphicview.scene().items() if isinstance(item, QtWidgets.QGraphicsEllipseItem)]
+
+        itemlist = [item for item in self.graphicview.scene().items() if isinstance(item, QtWidgets.QGraphicsEllipseItem) and getattr(item, "_pathattr", None) == Attribute.TAB]
         tablist = [dict(refid=item._refid, parentid=item._parentrefid, pos=item._pos, width=item._tabwidth, height=item._tabheight) for item in itemlist]
+
+        itemlist = [item for item in self.graphicview.scene().items() if isinstance(item, QtWidgets.QGraphicsEllipseItem) and getattr(item, "_pathattr", None) == Attribute.OVERCUT]
+        overcutlist = [dict(id=item._id, parentid=item._parentrefid, pos=item._pos) for item in itemlist]
+
+        itemlist = [item for item in self.graphicview.scene().items() if isinstance(item, QtWidgets.QGraphicsEllipseItem) and getattr(item, "_pathattr", None) == Attribute.CORNER]
+        cornerlist = [dict(id=item._id, parentid=item._parentrefid, pos=item._pos) for item in itemlist]
+
         settings = dict(savez=self.commandwidget.wgSaveZ.value(), materialthickness=self.commandwidget.wgMaterialThickness.value())
-        json.dump(dict(settings=settings, pathlist=pathlist, tablist=tablist, toollist=self.settings["tooltable"]), open(filename, "w"), indent=4)
+
+        json.dump(dict(settings=settings, pathlist=pathlist, tablist=tablist, overcutlist=overcutlist, cornerlist=cornerlist, toollist=self.settings["tooltable"]), open(filename, "w"), indent=4)
 
     def open(self, _, filename=None):
         print(filename)
         if filename is None:
-            filename = QtWidgets.QFileDialog.getOpenFileName(self, "Open File", ".", "*.svg")[0]
+            filename = QtWidgets.QFileDialog.getOpenFileName(self, "Open File", ".", "*.svg;; *.json")[0]
         if filename:
+            suffix = pathlib.Path(filename).suffix
             try:
-                self.loadSvgFile(filename)
+                if suffix == ".svg":
+                    self.loadSvgFile(filename)
+                elif suffix == ".json":
+                    self.loadJsonFile(filename)
+                else:
+                    raise ValueError(f"Don't know how to {filename}")
             except Exception:
+                print(traceback.format_exc())
                 QtWidgets.QMessageBox.critical(self, "Error opening file", traceback.format_exc())
                 return
+
+def debug(itemlist):
+    for item in itemlist:
+        print("{0}: _pathattr={1}, _refid={2}, _parentrefid={3}".format(item, getattr(item, "_pathattr", None), getattr(item, "_refid", None), getattr(item, "_parentrefid", None)))
 
 if __name__ == '__main__':
     settings = json.load(open("settings.json"))
