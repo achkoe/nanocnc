@@ -1,3 +1,4 @@
+import json
 import math
 import svgpathtools
 
@@ -10,6 +11,9 @@ class Polygon():
 
     def __str__(self):
         return ", ".join("({:f}, {:f})".format(x, y) for x, y in zip(self.xlist, self.ylist))
+
+    def asdict(self):
+        return dict(xlist=self.xlist, ylist=self.ylist)
 
     def _parallel(self, distance: float, x1: float, y1: float, x2: float, y2: float):
         """Compute coordinates of points on a line which is parallel to the given.
@@ -105,3 +109,104 @@ def svg2polygon(filename, number_of_samples=50):
         polygonlist.append(Polygon(xlist, ylist))
     return polygonlist
 
+
+def process_tabs(dictobj):
+    pass
+
+
+def process_overcuts(dictobj):
+    for overcut in dictobj["overcutlist"]:
+        # search path to which the overcut belongs to
+        found = False
+        parentid = overcut["parentid"]
+        for path in dictobj["pathlist"]:
+            if parentid == path['id']:
+                found = True
+                break
+        if not found:
+            raise ValueError("overcut {id}: no parent path {parentid} not found".format(**overcut))
+        # search index of point in path where overcut is
+        found = False
+        for index, (xpos, ypos) in enumerate(zip(path["polygon"]["xlist"], path["polygon"]["ylist"])):
+            if math.isclose(xpos, overcut["pos"][0], rel_tol=1E-3) and math.isclose(ypos, overcut["pos"][1], rel_tol=1E-3):
+                found = True
+                break
+        if not found:
+            raise ValueError("overcut {id}: no position on parent path {parentid} not found".format(**overcut))
+#        print(f"{path['id']}, {parentid}, {overcut['pos']}, {index}, {path['polygon']['xlist'][index]}, {path['polygon']['ylist'][index]}")
+        diameter = dictobj["toollist"][path["tool"]]["Diameter"]
+        if index == len(path["polygon"]["xlist"]) - 1:
+            y1, x1 = path["polygon"]["ylist"][index - 1], path["polygon"]["xlist"][index - 1]
+        else:
+            y1, x1 = path["polygon"]["ylist"][index + 1], path["polygon"]["xlist"][index + 1]
+        y2, x2 = path["polygon"]["ylist"][index], path["polygon"]["xlist"][index]
+        if x1 - x2 == 0:
+            # line is parallel to y axis, vertical line
+            dx = 0
+            dy = (diameter / 2) * [-1, +1][y1 - y2 > 0]
+        else:
+            D = math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+            dx = (x1 - x2) * (diameter / 2) / D
+            dy = (y1 - y2) * (diameter / 2) / D
+        path['polygon']['xlist'].insert(index + 1, x1 + dx)
+        path['polygon']['ylist'].insert(index + 1, y1 + dy)
+
+
+def make_gcode(dictobj):
+    process_overcuts(dictobj)
+    json.dump(dictobj, open("debug.json", "w"))
+    process_tabs(dictobj)
+
+
+if __name__ == '__main__':
+    filename = "../../overcut.json"
+    dictobj = json.load(open(filename))
+    make_gcode(dictobj)
+
+
+"""
+G0 : Rapid Move
+G1 : Linear Move
+G0 Xnnn Ynnn Znnn Ennn Fnnn Snnn
+G1 Xnnn Ynnn Znnn Ennn Fnnn Snnn
+Parameters
+Not all parameters need to be used, but at least one has to be used
+Xnnn The position to move to on the X axis
+Ynnn The position to move to on the Y axis
+Znnn The position to move to on the Z axis
+Ennn The amount to extrude between the starting point and ending point
+Fnnn The feedrate per minute of the move between the starting point and ending point (if supplied)
+
+
+G4: Dwell
+Pause the machine for a period of time.
+Parameters
+Pnnn Time to wait, in milliseconds (In Teacup, P0, wait until all previous moves are finished)
+Snnn Time to wait, in seconds (Only on Repetier, Marlin, Prusa, Smoothieware, and RepRapFirmware 1.16 and later)
+
+
+M3: Spindle On, Clockwise (CNC specific)
+Parameters
+Snnn Spindle RPM
+
+M5: Spindle Off (CNC specific)
+
+
+(Block-name: Header), (Block-name: path821), (Block-name: Footer)
+(Block-expand: 0)
+(Block-enable: 1)
+
+M3 S12000
+G4 P3
+
+G0 Z10
+
+G02 X107.345 Y-125.643 R28.7262
+G0 X0.0932 Y42.3303
+G1 Z-5 f500
+G1 X2.0661 Y42.2246 Z-5 f1200
+
+G0 Z10
+M5
+
+"""

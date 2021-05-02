@@ -28,7 +28,7 @@ COLOR_NORMAL = QtGui.QColor(QtCore.Qt.black)
 COLOR_HOVER = QtGui.QColor(QtCore.Qt.green)
 COLOR_CUTPATH = QtGui.QColor(QtCore.Qt.blue)
 COLOR_TAB =  QtGui.QColor(QtCore.Qt.red)
-COLOR_OVERCUT = QtGui.QColor(QtCore.Qt.red)
+COLOR_OVERCUT = QtGui.QColor(QtCore.Qt.magenta)
 COLOR_DISABLE = QtGui.QColor(QtCore.Qt.gray)
 
 
@@ -124,7 +124,11 @@ class GraphicView(QtWidgets.QGraphicsView):
         self.scene().addItem(group)
         return group
 
-    def drawJson(self, jsonobj):
+    def drawJson(self, jsonobj, clear=False):
+        if clear is True:
+            self.setScene(QtWidgets.QGraphicsScene(QtCore.QRectF()))
+            self.scene().addItem(QtWidgets.QGraphicsLineItem(-2, 0, +2, 0))
+            self.scene().addItem(QtWidgets.QGraphicsLineItem(0, -2, 0, +2))
         for path in jsonobj["pathlist"]:
             polygon = libnanocnc.Polygon(path["polygon"]["xlist"], path["polygon"]["ylist"])
             self.drawPolygon(polygon, Attribute(path["pathattr"]), path["tool"])
@@ -421,20 +425,29 @@ class CommandWidget(QtWidgets.QWidget):
 class ToolWidget(QtWidgets.QTableWidget):
     def __init__(self, toollist):
         super().__init__()
-        self.setColumnCount(len(toollist[0].keys()))
-        self.setRowCount(len(toollist))
-        self.setHorizontalHeaderLabels(toollist[0].keys())
+        self._initialized = False
+        self.init(toollist)
         self.horizontalHeader().setStretchLastSection(True)
         self.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.itemSelectionChanged.connect(self.toolChanged)
+        self._initialized = True
 
+    def init(self, toollist):
+        if self._initialized is True:
+            self.itemSelectionChanged.disconnect(self.toolChanged)
+        self.clear()
+        self.setColumnCount(len(toollist[0].keys()))
+        self.setRowCount(len(toollist))
+        self.setHorizontalHeaderLabels(toollist[0].keys())
         for row, tool in enumerate(toollist):
             for column, key in enumerate(tool.keys()):
                 item = QtWidgets.QTableWidgetItem(str(tool[key]))
                 self.setItem(row, column, item)
         self.currenttool = 0
         self.selectRow(self.currenttool)
+        if self._initialized is True:
+            self.itemSelectionChanged.connect(self.toolChanged)
 
     def toolChanged(self):
         self.currenttool = self.selectionModel().selectedRows()[0].row()
@@ -444,7 +457,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def __init__(self, settings, filename=None):
         super().__init__()
-        print(filename)
         self.setWindowTitle(PROGNAME)
         self.setGeometry(0, 0, 1024, 1024)
         self.settings = settings
@@ -461,11 +473,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.openAct = QtWidgets.QAction("&Open...", self, shortcut="Ctrl+O", triggered=self.open)
         self.saveAct = QtWidgets.QAction("&Save...", self, shortcut="Ctrl+S", triggered=self.save)#, enabled=False)
+        self.gcodeAct = QtWidgets.QAction("Save &GCode...", self, shortcut="Ctrl+G", triggered=self.save_gcode)#, enabled=False)
         self.exitAct = QtWidgets.QAction("E&xit", self, shortcut="Ctrl+Q", triggered=self.close)
 
         self.fileMenu = QtWidgets.QMenu("&File", self)
         self.fileMenu.addAction(self.openAct)
         self.fileMenu.addAction(self.saveAct)
+        self.fileMenu.addAction(self.gcodeAct)
         self.fileMenu.addAction(self.exitAct)
         self.menuBar().addMenu(self.fileMenu)
 
@@ -504,6 +518,7 @@ class MainWindow(QtWidgets.QMainWindow):
         mainlayout = QtWidgets.QHBoxLayout()
         mainlayout.addWidget(self.graphicview)
         self.setCentralWidget(self.graphicview)
+        self._last_folder = "."
         if filename:
             self.open(None, filename=filename)
 
@@ -540,6 +555,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 item._pathattr = Attribute.OUTER
                 item._tool = tool
                 group._parent = item._pid
+                group._tool = tool
         elif self.commandwidget.action == Attribute.DISABLE:
             if item._pathattr == Attribute.NONE:
                 print("DISABLE")
@@ -577,7 +593,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def loadJsonFile(self, filename):
         with open(filename) as fh:
-            self.graphicview.drawJson(json.load(fh))
+            jsonobj = json.load(fh)
+            self.graphicview.drawJson(jsonobj, clear=True)
+            self.toolWidget.init(jsonobj["toollist"])
 
     def save(self, _, filename=None):
         """
@@ -623,7 +641,10 @@ class MainWindow(QtWidgets.QMainWindow):
             filename = QtWidgets.QFileDialog.getSaveFileName(self, "Save to", proposedname, "JSON (*.json);; All files (*.*")[0]
         if filename == "":
             return
-        print(filename)
+        self._last_folder = str(pathlib.Path(filename).parent)
+        json.dump(self.get_as_dict(), open(filename, "w"), indent=4)
+
+    def get_as_dict(self):
         itemlist = [item for item in self.graphicview.scene().items() if isinstance(item, QtWidgets.QGraphicsItemGroup)]
         pathlist = [dict(id=item._pid, parentid=getattr(item, "_parent", None), pathattr=item._pathattr.value, polygon=item._polygon.asdict(), tool=item._tool) for item in itemlist]
 
@@ -638,12 +659,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
         settings = dict(savez=self.commandwidget.wgSaveZ.value(), materialthickness=self.commandwidget.wgMaterialThickness.value())
 
-        json.dump(dict(settings=settings, pathlist=pathlist, tablist=tablist, overcutlist=overcutlist, cornerlist=cornerlist, toollist=self.settings["tooltable"]), open(filename, "w"), indent=4)
+        return dict(settings=settings, pathlist=pathlist, tablist=tablist, overcutlist=overcutlist, cornerlist=cornerlist, toollist=self.settings["tooltable"])
+
+    def save_gcode(self):
+        dictobj = self.get_as_dict()
+        try:
+            libnanocnc.make_gcode(dictobj)
+        except Exception as e:
+            print(traceback.format_exc())
+            QtWidgets.QMessageBox.critical(self, "Error processing file", traceback.format_exc())
+            return
 
     def open(self, _, filename=None):
         print(filename)
         if filename is None:
-            filename = QtWidgets.QFileDialog.getOpenFileName(self, "Open File", ".", "*.svg;; *.json")[0]
+            filename = QtWidgets.QFileDialog.getOpenFileName(self, "Open File", self._last_folder, "*.svg;; *.json")[0]
         if filename:
             suffix = pathlib.Path(filename).suffix
             try:
@@ -653,14 +683,18 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.loadJsonFile(filename)
                 else:
                     raise ValueError(f"Don't know how to {filename}")
+                self._last_folder = str(pathlib.Path(filename).parent)
+                self.setWindowTitle(f"{PROGNAME} {filename}")
             except Exception:
                 print(traceback.format_exc())
                 QtWidgets.QMessageBox.critical(self, "Error opening file", traceback.format_exc())
                 return
 
+
 def debug(itemlist):
     for item in itemlist:
         print("{0}: _pathattr={1}, _refid={2}, _parentrefid={3}".format(item, getattr(item, "_pathattr", None), getattr(item, "_refid", None), getattr(item, "_parentrefid", None)))
+
 
 if __name__ == '__main__':
     settings = json.load(open("settings.json"))
