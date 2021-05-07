@@ -111,7 +111,25 @@ def svg2polygon(filename, number_of_samples=50):
 
 
 def process_tabs(dictobj):
-    pass
+    for tab in dictobj["tablist"]:
+        # search path to which tab belongs
+        found = False
+        for path in dictobj["pathlist"]:
+            if path["id"] == tab["refid"]:
+                found = True
+                break
+        if not found:
+            raise ValueError("tab at {pos!r}: no parent path with id {refid} not found".format(**tab))
+
+        # compute lelngth of line where tab lies
+        p = tab["linepoints"]
+        linelength = (p[0] - p[2]) ** 2 + (p[1] - p[3]) ** 2
+        if tab["width"] ** 2 <= linelength:
+            # insert two points at tab position and tab position + width and mark them as tab
+            pass
+        else:
+            # mark all points from tab position till tap position + tab width as tab
+            pass
 
 
 def process_overcuts(dictobj):
@@ -134,6 +152,7 @@ def process_overcuts(dictobj):
         if not found:
             raise ValueError("overcut {id}: no position on parent path {parentid} not found".format(**overcut))
 #        print(f"{path['id']}, {parentid}, {overcut['pos']}, {index}, {path['polygon']['xlist'][index]}, {path['polygon']['ylist'][index]}")
+
         diameter = dictobj["toollist"][path["tool"]]["Diameter"]
         if index == len(path["polygon"]["xlist"]) - 1:
             y1, x1 = path["polygon"]["ylist"][index - 1], path["polygon"]["xlist"][index - 1]

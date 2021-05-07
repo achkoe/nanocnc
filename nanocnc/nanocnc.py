@@ -136,7 +136,7 @@ class GraphicView(QtWidgets.QGraphicsView):
             pass
         for tab in jsonobj["tablist"]:
             # TODO: set attributes of returned tab item, 0 is not correct
-            self.drawTab(tab["refid"], tab["pos"][0], tab["pos"][1], tab["width"], tab["height"], tab["parentid"])
+            self.drawTab(tab["refid"], tab["pos"][0], tab["pos"][1], tab["width"], tab["height"], tab["parentid"], tab["linepoints"])
         for overcut in jsonobj["overcutlist"]:
             # search the marker witt same id as overcut id
             itemlist = [item for item in self.scene().items() if getattr(item, "_pathattr", None) == Attribute.CORNER and math.isclose(item._pos[0], overcut["pos"][0], rel_tol=1E-3) and math.isclose(item._pos[1], overcut["pos"][1], rel_tol=1E-3) ]
@@ -181,10 +181,10 @@ class GraphicView(QtWidgets.QGraphicsView):
                     nearest_distance = distance
                     nearest_point = pt
             tabxpos, tabypos = nearest_point.x(), nearest_point.y()
-        item = self.drawTab(itemgroup._pid, tabxpos, tabypos, tabwidth, tabheight, parentrefid)
+        item = self.drawTab(itemgroup._pid, tabxpos, tabypos, tabwidth, tabheight, parentrefid, [nearest_item.line().x1(), nearest_item.line().y1(), nearest_item.line().x2(), nearest_item.line().y2()])
         return item
 
-    def drawTab(self, pid, tabxpos, tabypos, tabwidth, tabheight, parentrefid):
+    def drawTab(self, pid, tabxpos, tabypos, tabwidth, tabheight, parentrefid, linepoints):
         item = QtWidgets.QGraphicsEllipseItem(tabxpos - 1, tabypos - 1, 2, 2)
         item._pathattr = Attribute.TAB
         item._pos = (tabxpos, tabypos)
@@ -192,6 +192,7 @@ class GraphicView(QtWidgets.QGraphicsView):
         item._tabheight = tabheight
         item._refid = pid
         item._parentrefid = parentrefid
+        item._linepoints = linepoints
         effect = QtWidgets.QGraphicsColorizeEffect()
         effect.setColor(COLOR_TAB)
         item.setGraphicsEffect(effect)
@@ -626,6 +627,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 the width of the tab
             "height":
                 the height of the tab
+            "linepoints": list [x1, y1, x2, y2] of start andend points of the line where tab is
 
         overcutlist is a list of all overcuts with object describing the overcut
         overctu object is
@@ -649,7 +651,7 @@ class MainWindow(QtWidgets.QMainWindow):
         pathlist = [dict(id=item._pid, parentid=getattr(item, "_parent", None), pathattr=item._pathattr.value, polygon=item._polygon.asdict(), tool=item._tool) for item in itemlist]
 
         itemlist = [item for item in self.graphicview.scene().items() if isinstance(item, QtWidgets.QGraphicsEllipseItem) and getattr(item, "_pathattr", None) == Attribute.TAB]
-        tablist = [dict(refid=item._refid, parentid=item._parentrefid, pos=item._pos, width=item._tabwidth, height=item._tabheight) for item in itemlist]
+        tablist = [dict(refid=item._refid, parentid=item._parentrefid, pos=item._pos, width=item._tabwidth, height=item._tabheight, linepoints=item._linepoints) for item in itemlist]
 
         itemlist = [item for item in self.graphicview.scene().items() if isinstance(item, QtWidgets.QGraphicsEllipseItem) and getattr(item, "_pathattr", None) == Attribute.OVERCUT]
         overcutlist = [dict(id=item._id, parentid=item._parentrefid, pos=item._pos) for item in itemlist]
