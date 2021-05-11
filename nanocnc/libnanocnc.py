@@ -1,6 +1,13 @@
+from dataclasses import dataclass
 import json
 import math
 import svgpathtools
+
+@dataclass
+class Point:
+    x: float
+    y: float
+    tabwidth: float = 0.0
 
 
 class Polygon():
@@ -110,6 +117,13 @@ def svg2polygon(filename, number_of_samples=50):
     return polygonlist
 
 
+def _searchpoint(ps, pointlist):
+    for index, p in enumerate(pointlist):
+        if math.isclose(p.x, ps.x, rel_tol=1E-3) and math.isclose(p.y, ps.y, rel_tol=1E-3):
+            return index
+    return None
+
+
 def process_tabs(dictobj):
     for tab in dictobj["tablist"]:
         # search path to which tab belongs
@@ -121,12 +135,59 @@ def process_tabs(dictobj):
         if not found:
             raise ValueError("tab at {pos!r}: no parent path with id {refid} not found".format(**tab))
 
-        # compute lelngth of line where tab lies
-        p = tab["linepoints"]
-        linelength = (p[0] - p[2]) ** 2 + (p[1] - p[3]) ** 2
-        if tab["width"] ** 2 <= linelength:
-            # insert two points at tab position and tab position + width and mark them as tab
-            pass
+        pt = Point(*tab["pos"])
+        print(pt)
+        pl1, pl2 = Point(*tab["linepoints"][:2]), Point(*tab["linepoints"][2:])
+        if pl2.x <= pl1.x:
+            pl1.x, pl2.x = pl2.x, pl1.x
+            pl1.y, pl2.y = pl2.y, pl1.y
+            print("swap")
+        print(pl1.x, pl1.y, pl2.x, pl2.y)
+        index1 = _searchpoint(pl1, path["polygonpoints"])
+        index2 = _searchpoint(pl2, path["polygonpoints"])
+        print("index:", index1, index2)
+        if index1 is None or index2 is None:
+            raise(ValueError("points not found"))
+
+        # compute length of line where tab lies
+        linelength = math.sqrt((pl1.x - pl2.x) ** 2 + (pl1.y - pl2.y) ** 2)
+        w = tab["width"]
+
+        if w <= linelength:
+            # insert two points at tab position - width / 2 and tab position + width / 2 and mark them as tab
+            wx = tab["width"] * (pl2.x - pl1.x) / linelength
+            wy = tab["width"] * (pl2.y - pl1.y) / linelength
+            if round(pt.x - wx / 2 - pl1.x, 3) < 0 or round(pt.y - wy / 2 - pl1.y, 3) < 0:
+                print("i2")
+                # tab would extend over xt1 or yt1, so set tab start point to xt1, yt2
+                path["polygon"]["xlist"][index1] = [pl1.x, pl1.y, tab["width"]]
+                path["polygon"]["ylist"].insert(index1, [pl1.x + wx, pl1.y + wy, tab["width"]])
+            elif round(pt.x + wx / 2 - pl2.x, 3) > 0 or round(pt.y + wy / 2 - pl2.y, 3) > 0:
+                # tab would extend over xt2 or yt2, so set tab end point to xt2, yt2
+                print("i3")
+                xte, yte = pl2.x, pl2.y
+                xts, yts = pl2.x - wx, pl2.y - wy
+            else:
+                # tab is lying between the two points
+                print("i4")
+
+                lt = math.sqrt((pt.x - pl1.x) ** 2 + (pt.y - pl1.y) ** 2)  # length between (xt, yt) and (pl1.x, pl1.y)
+                xta = ((lt - w / 2) / linelength) * (pl2.x - pl1.x) + pl1.x
+                yta = ((lt - w / 2) / linelength) * (pl2.y - pl1.y) + pl1.y
+                xtb = ((lt + w / 2) / linelength) * (pl2.x - pl1.x) + pl1.x
+                ytb = ((lt + w / 2) / linelength) * (pl2.y - pl1.y) + pl1.y
+
+                print(f"pl1.x={pl1.x:6.2f}, pl1.y={pl1.y:6.2f}, pl2.x={pl2.x:6.2f}, pl2.y={pl2.y:6.2f}")
+                print(f"lt={lt:6.2f}, l={linelength:6.2f}")
+                print(f"xta={xta:6.2f}, yta={yta:6.2f}, xtb={xtb:6.2f}, ytb={ytb:6.2f}")
+
+                path["polygonpoints"].insert(index2, Point(xta, yta))
+                path["polygonpoints"].insert(index2, Point(xtb, ytb, tab["width"]))
+
+                # path["polygon"]["xlist"].insert(index2, xta)
+                # path["polygon"]["ylist"].insert(index2, yta)
+                # path["polygon"]["xlist"].insert(index2, [xtb, tab["width"]])
+                # path["polygon"]["ylist"].insert(index2, [ytb, tab["width"]])
         else:
             # mark all points from tab position till tap position + tab width as tab
             pass
@@ -145,8 +206,8 @@ def process_overcuts(dictobj):
             raise ValueError("overcut {id}: no parent path {parentid} not found".format(**overcut))
         # search index of point in path where overcut is
         found = False
-        for index, (xpos, ypos) in enumerate(zip(path["polygon"]["xlist"], path["polygon"]["ylist"])):
-            if math.isclose(xpos, overcut["pos"][0], rel_tol=1E-3) and math.isclose(ypos, overcut["pos"][1], rel_tol=1E-3):
+        for index, p in enumerate(path["polygonpoints"]):
+            if math.isclose(p.x, overcut["pos"][0], rel_tol=1E-3) and math.isclose(p.y, overcut["pos"][1], rel_tol=1E-3):
                 found = True
                 break
         if not found:
@@ -154,33 +215,73 @@ def process_overcuts(dictobj):
 #        print(f"{path['id']}, {parentid}, {overcut['pos']}, {index}, {path['polygon']['xlist'][index]}, {path['polygon']['ylist'][index]}")
 
         diameter = dictobj["toollist"][path["tool"]]["Diameter"]
-        if index == len(path["polygon"]["xlist"]) - 1:
-            y1, x1 = path["polygon"]["ylist"][index - 1], path["polygon"]["xlist"][index - 1]
+
+        # get two points of line
+        if index == len(path["polygonpoints"]) - 1:
+            # if it is last point in list
+            p1 = path["polygonpoints"][index - 1]
         else:
-            y1, x1 = path["polygon"]["ylist"][index + 1], path["polygon"]["xlist"][index + 1]
-        y2, x2 = path["polygon"]["ylist"][index], path["polygon"]["xlist"][index]
-        if x1 - x2 == 0:
+            p1 = path["polygonpoints"][index + 1]
+        p2 = path["polygonpoints"][index]
+        if p1.x - p2.x == 0:
             # line is parallel to y axis, vertical line
             dx = 0
-            dy = (diameter / 2) * [-1, +1][y1 - y2 > 0]
+            dy = (diameter / 2) * [+1, -1][p1.y - p2.y > 0]
         else:
-            D = math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
-            dx = (x1 - x2) * (diameter / 2) / D
-            dy = (y1 - y2) * (diameter / 2) / D
-        path['polygon']['xlist'].insert(index + 1, x1 + dx)
-        path['polygon']['ylist'].insert(index + 1, y1 + dy)
+            D = math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2)  # length of line
+            dx = ((p1.x - p2.x) * (diameter / 2) / D) * [+1, -1][p1.x - p2.x < 0]
+            dy = ((p1.y - p2.y) * (diameter / 2) / D) * [+1, -1][p1.y - p2.y < 0]
+        path['polygonpoints'].insert(index, Point(p2.x + dx, p2.y + dy))
+        path['polygonpoints'].insert(index, Point(p2.x, p2.y))
 
 
 def make_gcode(dictobj):
     process_overcuts(dictobj)
-    json.dump(dictobj, open("debug.json", "w"))
     process_tabs(dictobj)
+    for path in dictobj["pathlist"]:
+        path["polygon"]["xlist"] = [p.x for p in path["polygonpoints"]]
+        path["polygon"]["ylist"] = [p.y for p in path["polygonpoints"]]
+        del path["polygonpoints"]
+    json.dump(dictobj, open("debug.json", "w"), indent=4)
 
+def test(dictobj):
+    for path in dictobj["pathlist"]:
+
+        if 0:
+            path["polygonpoints"] = path["polygonpoints"][::-1]
+
+        if 0:
+            result = 0
+            for a in range(len(path)):
+                b = (a + 1) % len(path)
+                result += path["polygonpoints"][a].x * path["polygonpoints"][b].y;
+                result -= path["polygonpoints"][a].y * path["polygonpoints"][b].x;
+            print(result)
+
+        area = 0
+        for index, b_point in enumerate(path["polygonpoints"][:-1]):
+            e_point = path["polygonpoints"][index + 1]
+            area += b_point.x * e_point.y - b_point.y * e_point.x
+        print(area)
+        if area > 0:
+            print("clockwise")
+        elif area < 0:
+            print("counterclockwise")
+        else:
+            print("Oops")
 
 if __name__ == '__main__':
     filename = "../../overcut.json"
     dictobj = json.load(open(filename))
-    make_gcode(dictobj)
+    for path in dictobj["pathlist"]:
+        print(1)
+        path["polygonpoints"] = [Point(x, y) for x, y in zip(path["polygon"]["xlist"], path["polygon"]["ylist"])]
+    for path in dictobj["pathlist"]:
+        assert len(path["polygonpoints"]) == len(path["polygon"]["xlist"])
+        assert len(path["polygonpoints"]) == len(path["polygon"]["ylist"])
+    # make_gcode(dictobj)
+
+    test(dictobj)
 
 
 """

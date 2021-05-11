@@ -101,8 +101,30 @@ class GraphicView(QtWidgets.QGraphicsView):
         group = QtWidgets.QGraphicsItemGroup()
         #group = self.scene().createItemGroup([])
         self.pid += 1
+
+        # determine if polygon is clockwise or counterclockwise
+        # from https://gamedev.stackexchange.com/questions/43356/how-can-i-tell-whether-an-object-is-moving-cw-or-ccw-around-a-connected-path
+        area = 0
         for index in range(len(polygon.xlist) - 1):
-            group.addToGroup(QtWidgets.QGraphicsLineItem(polygon.xlist[index], polygon.ylist[index], polygon.xlist[index + 1], polygon.ylist[index + 1]))
+            bx = polygon.xlist[index]
+            by = polygon.ylist[index]
+            ex = polygon.xlist[index + 1]
+            ey = polygon.ylist[index + 1]
+            area += bx * ey - by * ex
+        clockwise = area > 0
+        if not clockwise:
+            polygon.xlist = polygon.xlist[::-1]
+            polygon.ylist = polygon.ylist[::-1]
+
+        for index in range(len(polygon.xlist) - 1):
+            x1, y1 = polygon.xlist[index], polygon.ylist[index]
+            x2, y2 = polygon.xlist[index + 1], polygon.ylist[index + 1]
+            group.addToGroup(QtWidgets.QGraphicsLineItem(x1, y1, x2, y2))
+            DRAW_LABEL = True
+            if DRAW_LABEL:
+                label = QtWidgets.QGraphicsSimpleTextItem(str(index))
+                label.setPos(x1, y1)
+                self.scene().addItem(label)
             if 1 and pathattr == Attribute.CUTPATH:
                 marker = QtWidgets.QGraphicsEllipseItem(polygon.xlist[index] - 0.5, polygon.ylist[index] - 0.5, 1, 1)
                 marker._pathattr = Attribute.CORNER
