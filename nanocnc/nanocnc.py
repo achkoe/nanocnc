@@ -120,13 +120,15 @@ class GraphicView(QtWidgets.QGraphicsView):
             x1, y1 = polygon.xlist[index], polygon.ylist[index]
             x2, y2 = polygon.xlist[index + 1], polygon.ylist[index + 1]
             group.addToGroup(QtWidgets.QGraphicsLineItem(x1, y1, x2, y2))
-            DRAW_LABEL = True
+
+            DRAW_LABEL = False
             if DRAW_LABEL:
                 label = QtWidgets.QGraphicsSimpleTextItem(str(index))
                 label.setPos(x1, y1)
                 self.scene().addItem(label)
-            if 1 and pathattr == Attribute.CUTPATH:
-                marker = QtWidgets.QGraphicsEllipseItem(polygon.xlist[index] - 0.5, polygon.ylist[index] - 0.5, 1, 1)
+
+            if pathattr == Attribute.CUTPATH:
+                marker = QtWidgets.QGraphicsEllipseItem(polygon.xlist[index] - 1, polygon.ylist[index] - 1, 2, 2)
                 marker._pathattr = Attribute.CORNER
                 marker._parentrefid = self.pid
                 self.mid += 1
@@ -134,6 +136,7 @@ class GraphicView(QtWidgets.QGraphicsView):
                 marker._pos = (polygon.xlist[index], polygon.ylist[index])
                 marker.setVisible(False)
                 self.scene().addItem(marker)
+
         group._pathattr = pathattr
         group._polygon = polygon
         group._tool = tool
@@ -147,13 +150,17 @@ class GraphicView(QtWidgets.QGraphicsView):
         return group
 
     def drawJson(self, jsonobj, clear=False):
+        self.pid = 0
+        self.mid = 0
         if clear is True:
             self.setScene(QtWidgets.QGraphicsScene(QtCore.QRectF()))
             self.scene().addItem(QtWidgets.QGraphicsLineItem(-2, 0, +2, 0))
             self.scene().addItem(QtWidgets.QGraphicsLineItem(0, -2, 0, +2))
         for path in jsonobj["pathlist"]:
             polygon = libnanocnc.Polygon(path["polygon"]["xlist"], path["polygon"]["ylist"])
-            self.drawPolygon(polygon, Attribute(path["pathattr"]), path["tool"])
+            item = self.drawPolygon(polygon, Attribute(path["pathattr"]), path["tool"])
+            item._parent = path["parentid"]
+            item._pid = path["id"]
         for corner in jsonobj["cornerlist"]:
             pass
         for tab in jsonobj["tablist"]:
@@ -173,7 +180,7 @@ class GraphicView(QtWidgets.QGraphicsView):
         self.scene().removeItem(group)
 
     def addTab(self, itemgroup, xpos, ypos, tabwidth, tabheight, parentrefid):
-        print("ADD_TAB", itemgroup._pid)
+        print("addTab", itemgroup._pid)
         nearest_item = None
         nearest_distance = 2 ** 30
         N = 10
@@ -569,6 +576,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 item._pathattr = Attribute.INNER
                 item._tool = tool
                 group._parent = item._pid
+                group._tool = tool
         elif self.commandwidget.action == Attribute.OUTER:
             if item._pathattr == Attribute.NONE:
                 print("OUTER")
