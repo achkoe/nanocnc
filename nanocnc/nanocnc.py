@@ -15,6 +15,7 @@ import json
 import pathlib
 import math
 import traceback
+import pprint
 from PyQt5 import QtWidgets, QtCore, QtGui
 
 import libnanocnc
@@ -45,6 +46,7 @@ class Attribute(enum.Enum):
     TAB = enum.auto()       # indicates a TAB
     OVERCUT = enum.auto()   # indicates an OVERCUT
     CORNER = enum.auto()
+    DEBUG = enum.auto()
 
 
 class Zoom(enum.Enum):
@@ -426,6 +428,13 @@ class CommandWidget(QtWidgets.QWidget):
 
         layout.addStretch(1)
 
+        button = QtWidgets.QPushButton("DEBUG")
+        button._data = Attribute.DEBUG
+        button.clicked.connect(self.buttonActionClicked)
+        self.buttongroup.addButton(button)
+        layout.addWidget(button)
+        layout.addStretch(1)
+
         self.setLayout(layout)
 
         self.action = Attribute.NONE
@@ -616,17 +625,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.graphicview.update()
 
     def updateAction(self):
-        self.graphicview.setAction(self.commandwidget.action)
+        if self.commandwidget.action == Attribute.DEBUG:
+            jsonobj = self.get_as_dict()
+            for path in jsonobj["pathlist"]:
+                path.pop("polygon")
+            pprint.pprint(jsonobj)
+        else:
+            self.graphicview.setAction(self.commandwidget.action)
 
     def loadSvgFile(self, filename):
         polygonlist = libnanocnc.svg2polygon(filename)
-        self.graphicview.drawPolygonList(polygonlist, clear=True)
+        jsonobj = dict(settings={}, tablist=[], overcutlist=[], cornerlist=[], toollist=[])
+        jsonobj["pathlist"] = [dict(id=index, parentid=None, pathattr=Attribute.NONE, tool=None, polygon=polygon.asdict()) for index, polygon in enumerate(polygonlist)]
+        self.graphicview.drawJson(jsonobj, clear=True)
+        #self.graphicview.drawPolygonList(polygonlist, clear=True)
 
     def loadJsonFile(self, filename):
         with open(filename) as fh:
             jsonobj = json.load(fh)
-            self.graphicview.drawJson(jsonobj, clear=True)
-            self.toolWidget.init(jsonobj["toollist"])
+        self.graphicview.drawJson(jsonobj, clear=True)
+        self.toolWidget.init(jsonobj["toollist"])
 
     def save(self, _, filename=None):
         """
