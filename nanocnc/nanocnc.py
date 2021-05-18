@@ -89,19 +89,25 @@ class GraphicView(QtWidgets.QGraphicsView):
             self.selectlist = [Attribute.NONE, Attribute.INNER, Attribute.OUTER, Attribute.DISABLE]
             self.selectitem = QtWidgets.QGraphicsItemGroup
 
-    def drawPolygonList(self, polygonlist, clear=False, pathattr=Attribute.NONE):
-        if clear is True:
-            self.setScene(QtWidgets.QGraphicsScene(QtCore.QRectF()))
-            self.scene().addItem(QtWidgets.QGraphicsLineItem(-2, 0, +2, 0))
-            self.scene().addItem(QtWidgets.QGraphicsLineItem(0, -2, 0, +2))
-        for polygon in polygonlist:
-            self.drawPolygon(polygon, pathattr)
-        self.fitInView(self.scene().itemsBoundingRect(), QtCore.Qt.KeepAspectRatio)
-        self.update()
+    def drawMarkerList(self, polygon, parentid):
+        for index in range(len(polygon.xlist) - 1):
+            self.drawMarker(polygon.xlist[index], polygon.ylist[index], parentid)
+
+    def drawMarker(self, xpos, ypos, parentid, id=None):
+        marker = QtWidgets.QGraphicsEllipseItem(xpos - 1, ypos - 1, 2, 2)
+        marker._pathattr = Attribute.CORNER
+        marker._parentrefid = parentid
+        if id is None:
+            self.mid += 1
+            id = self.mid
+        marker._id = id
+        marker._pos = (xpos, ypos)
+        marker.setVisible(False)
+        self.scene().addItem(marker)
+        return marker
 
     def drawPolygon(self, polygon, pathattr, tool=None):
         group = QtWidgets.QGraphicsItemGroup()
-        #group = self.scene().createItemGroup([])
         self.pid += 1
 
         # determine if polygon is clockwise or counterclockwise
@@ -129,16 +135,6 @@ class GraphicView(QtWidgets.QGraphicsView):
                 label.setPos(x1, y1)
                 self.scene().addItem(label)
 
-            if pathattr == Attribute.CUTPATH:
-                marker = QtWidgets.QGraphicsEllipseItem(polygon.xlist[index] - 1, polygon.ylist[index] - 1, 2, 2)
-                marker._pathattr = Attribute.CORNER
-                marker._parentrefid = self.pid
-                self.mid += 1
-                marker._id = self.mid
-                marker._pos = (polygon.xlist[index], polygon.ylist[index])
-                marker.setVisible(False)
-                self.scene().addItem(marker)
-
         group._pathattr = pathattr
         group._polygon = polygon
         group._tool = tool
@@ -164,15 +160,13 @@ class GraphicView(QtWidgets.QGraphicsView):
             item._parent = path["parentid"]
             item._pid = path["id"]
         for corner in jsonobj["cornerlist"]:
-            pass
+            self.drawMarker(*corner["pos"], parentid=corner["parentid"], id=corner["id"])
         for tab in jsonobj["tablist"]:
             # TODO: set attributes of returned tab item, 0 is not correct
             self.drawTab(tab["refid"], tab["pos"][0], tab["pos"][1], tab["width"], tab["height"], tab["parentid"], tab["linepoints"])
         for overcut in jsonobj["overcutlist"]:
-            # search the marker witt same id as overcut id
-            itemlist = [item for item in self.scene().items() if getattr(item, "_pathattr", None) == Attribute.CORNER and math.isclose(item._pos[0], overcut["pos"][0], rel_tol=1E-3) and math.isclose(item._pos[1], overcut["pos"][1], rel_tol=1E-3) ]
-            assert len(itemlist) > 0, "no matching overcut found"
-            self.addOverCut(itemlist[0])
+            item = self.drawMarker(*overcut["pos"], parentid=overcut["parentid"], id=overcut["id"])
+            self.addOverCut(item)
         self.fitInView(self.scene().itemsBoundingRect(), QtCore.Qt.KeepAspectRatio)
         self.update()
 
@@ -581,6 +575,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 print("INNER")
                 print(item._pid)
                 group = self.graphicview.drawPolygon(item._polygon.expand(diameter / 2), pathattr=Attribute.CUTPATH)
+                self.graphicview.drawMarkerList(group._polygon, group._pid)
                 item._group = group
                 item._pathattr = Attribute.INNER
                 item._tool = tool
@@ -591,6 +586,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 print("OUTER")
                 print(item._pid)
                 group = self.graphicview.drawPolygon(item._polygon.expand(-diameter / 2), pathattr=Attribute.CUTPATH)
+                self.graphicview.drawMarkerList(group._polygon, group._pid)
                 item._group = group
                 item._pathattr = Attribute.OUTER
                 item._tool = tool
@@ -638,7 +634,6 @@ class MainWindow(QtWidgets.QMainWindow):
         jsonobj = dict(settings={}, tablist=[], overcutlist=[], cornerlist=[], toollist=[])
         jsonobj["pathlist"] = [dict(id=index, parentid=None, pathattr=Attribute.NONE, tool=None, polygon=polygon.asdict()) for index, polygon in enumerate(polygonlist)]
         self.graphicview.drawJson(jsonobj, clear=True)
-        #self.graphicview.drawPolygonList(polygonlist, clear=True)
 
     def loadJsonFile(self, filename):
         with open(filename) as fh:

@@ -1,13 +1,25 @@
 from dataclasses import dataclass
 import json
+import logging
 import math
 import svgpathtools
+from PyQt5 import QtWidgets, QtCore, QtGui
+
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class Point:
     x: float
     y: float
     tabwidth: float = 0.0
+
+    def xv(self):
+        return self.x if self.tabwidth == 0 else [self.x, self.tabwidth]
+
+    def yv(self):
+        return self.y if self.tabwidth == 0 else [self.y, self.tabwidth]
 
 
 class Polygon():
@@ -124,7 +136,126 @@ def _searchpoint(ps, pointlist):
     return None
 
 
+def distance(p1, p2):
+    """Compute the distance between p1 and p2
+    """
+    return math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2)
+
+
+def crossproduct(v, u):
+    """
+    Compute r = v X u
+    v X u = (v.x * u.y - v.y * v.x)
+
+    """
+    return v.x * u.y - v.y * u.x
+
+
+def dotproduct(v, u):
+    """
+    Compute r = v * u
+    """
+    return v.x * u.x + v.y * u.y
+
+
+def _tabpoint_inside_segment(p1, p2, pt):
+    """
+    Return [bool, bool]
+    with 1st element True if first tab point is within p1--p2 else False
+    with 2nd element True if seconds tab point is within p1--p2 else False
+    """
+    # calculate the corner points of tab
+    if p1.x == p2.x:
+        # vertical
+        poi_list = [Point(pt.x, pt.y - pt.tabwidth / 2), Point(pt.x, pt.y + pt.tabwidth / 2)]
+    else:
+        # non vertical
+        m = (p1.y - p2.y) / (p1.x - p2.x)
+        dx = (pt.tabwidth / 2) / math.sqrt(1 + m ** 2)
+        dy = m * dx
+        poi_list = [Point(pt.x - dx, pt.y - dy), Point(pt.x + dx, pt.y + dy)]
+
+    # check if tab position +/- tab width / 2 lies on the line where the tab is
+    # https://lucidar.me/en/mathematics/check-if-a-point-belongs-on-a-line-segment/
+    logger.debug(poi_list)
+    # poi_list = [left, right]
+
+    inside_list = []
+    for poi in poi_list:
+        logger.debug("----")
+        logger.debug(f"poi={poi}")
+        AB = Point(p2.x - p1.x, p2.y - p1.y)
+        AC = Point(poi.x - p1.x, poi.y - p1.y)
+
+        CP = crossproduct(AB, AC)
+        if CP != 0:
+            inside_list.append(False)
+            logger.debug(f"[1] Point {pt} is not aligned within {p1} and {p2}")
+            continue
+
+        KAC = dotproduct(AB, AC)
+        if KAC < 0:
+            # poi is not between p1 and p2
+            logger.debug("2: poi is not between p1 and p2")
+            inside_list.append(False)
+            continue
+        elif KAC == 0:
+            # Point(xpos, ypos) is on p1
+            logger.debug("2: poi is on p1")
+            inside_list.append(True)
+            continue
+
+        KAB = dotproduct(AB, AB)
+        if KAC > KAB:
+            inside_list.append(False)
+            logger.debug(f"[2] Point {pt} is not aligned within {p1} and {p2}")
+            continue
+        if KAC == KAB:
+            # poi is on p2
+            logger.debug("3: poi is on p2")
+            inside_list.append(True)
+            continue
+
+        logger.debug("poi is between p1 and p2")
+        inside_list.append(True)
+    logger.debug(inside_list)
+    return inside_list
+
+
 def process_tabs(dictobj):
+    for tab in dictobj["tablist"]:
+        # search path to which tab belongs
+        found = False
+        for path in dictobj["pathlist"]:
+            if path["id"] == tab["refid"]:
+                found = True
+                break
+        if not found:
+            raise ValueError("tab at {pos!r}: no parent path with id {refid} not found".format(**tab))
+
+        p1, p2 = Point(*tab["linepoints"][:2]), Point(*tab["linepoints"][2:])
+        # compute length of line where tab lies
+        linelength = distance(p1, p2)
+        tabwidth = tab["width"]
+        pt = Point(*tab["pos"], tabwidth)
+        print()
+        print("p1=", p1)
+        print("p2=", p2)
+        print("pt=", pt)
+
+        # check if tab width < length of line where tab lies
+        if tabwidth <= linelength:
+            # tab fits on line
+            _tabpoint_inside_segment(p1, p2, pt)
+
+        else:
+            # tab does not fit on line
+            pass
+
+        print("=====================================")
+
+
+def _process_tabs(dictobj):
     for tab in dictobj["tablist"]:
         # search path to which tab belongs
         found = False
@@ -204,6 +335,17 @@ def process_overcuts(dictobj):
                 break
         if not found:
             raise ValueError("overcut {id}: no parent path {parentid} not found".format(**overcut))
+
+        found = False
+        for parentpath in dictobj["pathlist"]:
+            if parentpath["id"] == path["parentid"]:
+                found = True
+                break
+        if not found:
+            raise ValueError("overcut {id}: no parent parent path {parentid} not found".format(**overcut))
+
+        # print(parentpath["id"], path["parentid"])
+
         # search index of point in path where overcut is
         found = False
         for index, p in enumerate(path["polygonpoints"]):
@@ -212,76 +354,59 @@ def process_overcuts(dictobj):
                 break
         if not found:
             raise ValueError("overcut {id}: no position on parent path {parentid} not found".format(**overcut))
-#        print(f"{path['id']}, {parentid}, {overcut['pos']}, {index}, {path['polygon']['xlist'][index]}, {path['polygon']['ylist'][index]}")
+        #        print(f"{path['id']}, {parentid}, {overcut['pos']}, {index}, {path['polygon']['xlist'][index]}, {path['polygon']['ylist'][index]}")
 
         diameter = dictobj["toollist"][path["tool"]]["Diameter"]
 
-        # get two points of line
-        if index == len(path["polygonpoints"]) - 1:
-            # if it is last point in list
-            p1 = path["polygonpoints"][index - 1]
-        else:
-            p1 = path["polygonpoints"][index + 1]
-        p2 = path["polygonpoints"][index]
-        if p1.x - p2.x == 0:
-            # line is parallel to y axis, vertical line
-            dx = 0
-            dy = (diameter / 2) * [+1, -1][p1.y - p2.y > 0]
-        else:
-            D = math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2)  # length of line
-            dx = ((p1.x - p2.x) * (diameter / 2) / D) * [+1, -1][p1.x - p2.x < 0]
-            dy = ((p1.y - p2.y) * (diameter / 2) / D) * [+1, -1][p1.y - p2.y < 0]
-        path['polygonpoints'].insert(index, Point(p2.x + dx, p2.y + dy))
-        path['polygonpoints'].insert(index, Point(p2.x, p2.y))
+        p1 = path["polygonpoints"][index]
+        p2 = parentpath["polygonpoints"][index + 1] # why on hell +1 ???
+        # print(p1, p2)
+
+        p3 = get_point_at_line_in_distance(p1, p2, diameter / 2)
+
+        path['polygonpoints'].insert(index, Point(p3.x, p3.y, 10))
+        path['polygonpoints'].insert(index, Point(p1.x, p1.y, 10))
+
+        # required for process_tabs which comes after process_overcuts
+        parentpath['polygonpoints'].insert(index +1 , Point(p2.x, p2.y))
+        parentpath['polygonpoints'].insert(index +1, Point(p2.x, p2.y))
+
+
+def get_point_at_line_in_distance(p1, p2, distance):
+    """
+    Get the coordinates of a point lying on the line p1 - p2 with
+    distance to point p1.
+    """
+    linelength = math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2)
+    x = (distance / linelength) * (p2.x - p1.x) + p1.x
+    y = (distance / linelength) * (p2.y - p1.y) + p1.y
+    return Point(x, y)
 
 
 def make_gcode(dictobj):
     process_overcuts(dictobj)
     process_tabs(dictobj)
+
+
+def start():
+    ifilename = "./drawings/overcut.json"
+    ofilename = "./drawings/debug.json"
+    dictobj = json.load(open(ifilename))
     for path in dictobj["pathlist"]:
-        path["polygon"]["xlist"] = [p.x for p in path["polygonpoints"]]
-        path["polygon"]["ylist"] = [p.y for p in path["polygonpoints"]]
-        del path["polygonpoints"]
-    json.dump(dictobj, open("debug.json", "w"), indent=4)
-
-def test(dictobj):
-    for path in dictobj["pathlist"]:
-
-        if 0:
-            path["polygonpoints"] = path["polygonpoints"][::-1]
-
-        if 0:
-            result = 0
-            for a in range(len(path)):
-                b = (a + 1) % len(path)
-                result += path["polygonpoints"][a].x * path["polygonpoints"][b].y;
-                result -= path["polygonpoints"][a].y * path["polygonpoints"][b].x;
-            print(result)
-
-        area = 0
-        for index, b_point in enumerate(path["polygonpoints"][:-1]):
-            e_point = path["polygonpoints"][index + 1]
-            area += b_point.x * e_point.y - b_point.y * e_point.x
-        print(area)
-        if area > 0:
-            print("clockwise")
-        elif area < 0:
-            print("counterclockwise")
-        else:
-            print("Oops")
-
-if __name__ == '__main__':
-    filename = "../../overcut.json"
-    dictobj = json.load(open(filename))
-    for path in dictobj["pathlist"]:
-        print(1)
         path["polygonpoints"] = [Point(x, y) for x, y in zip(path["polygon"]["xlist"], path["polygon"]["ylist"])]
     for path in dictobj["pathlist"]:
         assert len(path["polygonpoints"]) == len(path["polygon"]["xlist"])
         assert len(path["polygonpoints"]) == len(path["polygon"]["ylist"])
-    # make_gcode(dictobj)
+    make_gcode(dictobj)
+    for path in dictobj["pathlist"]:
+        path["polygon"]["xlist"] = [p.xv() for p in path["polygonpoints"]]
+        path["polygon"]["ylist"] = [p.yv() for p in path["polygonpoints"]]
+        del path["polygonpoints"]
+    json.dump(dictobj, open(ofilename, "w"), indent=4)
 
-    test(dictobj)
+if __name__ == '__main__':
+    #test()
+    start()
 
 
 """
